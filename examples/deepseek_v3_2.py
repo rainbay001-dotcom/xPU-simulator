@@ -315,3 +315,33 @@ if __name__ == "__main__":
         seq_len = int(sys.argv[2])
 
     run_simulation(batch_size, seq_len)
+
+    # Export interactive HTML report
+    from xpu_simulator.utils.html_report import export_html_report
+    graph = build_deepseek_graph(batch_size, seq_len)
+
+    config = {
+        "dim": DIM, "inter_dim": INTER_DIM, "moe_inter_dim": MOE_INTER_DIM,
+        "n_layers": N_LAYERS, "n_dense_layers": N_DENSE_LAYERS,
+        "n_heads": N_HEADS, "n_routed_experts": N_ROUTED_EXPERTS,
+        "n_activated_experts": N_ACTIVATED_EXPERTS, "n_shared_experts": N_SHARED_EXPERTS,
+        "q_lora_rank": Q_LORA_RANK, "kv_lora_rank": KV_LORA_RANK,
+        "v_head_dim": V_HEAD_DIM, "vocab_size": VOCAB_SIZE,
+        "batch_size": batch_size, "seq_len": seq_len,
+    }
+
+    results = {}
+    for device_label, cost_model in [
+        ("NVIDIA A100 80GB", GPUCostModel(A100_80GB)),
+        ("NVIDIA H100 80GB", GPUCostModel(H100_80GB)),
+        ("Ascend 910B", NPUCostModel(ASCEND_910B)),
+        ("Ascend 910C", NPUCostModel(ASCEND_910C)),
+    ]:
+        results[device_label] = PerformanceEvaluator(cost_model).run(graph, overlap=True)
+
+    fname = export_html_report(
+        graph, results, "deepseek_v3.2_report.html",
+        model_name=f"DeepSeek V3.2 671B (batch={batch_size}, seq={seq_len})",
+        config=config,
+    )
+    print(f"Exported: {fname}")

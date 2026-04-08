@@ -7,40 +7,109 @@ from typing import Optional
 from ..core.evaluator import SimResult, OpResult
 
 
-def to_chrome_trace(result: SimResult, filename: str = "trace.json"):
-    """Export simulation result as Chrome tracing JSON.
+def _categorize_op(name: str) -> str:
+    """Categorize op name into a layer type for track grouping."""
+    if ".attn_score" in name or ".attn_v" in name or ".attn_softmax" in name:
+        return "Attention Compute"
+    elif ".wq_" in name or ".wkv_" in name or ".wo" in name:
+        return "Attention Projections"
+    elif ".moe.experts" in name:
+        return "MoE Experts"
+    elif ".moe.shared" in name:
+        return "MoE Shared Expert"
+    elif ".moe.gate" in name:
+        return "MoE Gate"
+    elif ".ffn." in name:
+        return "Dense FFN"
+    elif "norm" in name:
+        return "Norms"
+    elif "rope" in name:
+        return "RoPE"
+    else:
+        return "Other"
 
-    Open with chrome://tracing or https://ui.perfetto.dev
+
+def to_perfetto_trace(result: SimResult, filename: str = "trace.json", device_name: str = "Device"):
+    """Export simulation result as Perfetto-compatible trace.
+
+    Open with https://ui.perfetto.dev
     """
     events = []
 
+    # Process metadata
+    events.append({
+        "name": "process_name", "ph": "M", "pid": 1,
+        "args": {"name": device_name},
+    })
+
+    # Group ops into tracks by category
+    track_tids = {}
+    tid_counter = 1
+
     for r in result.per_op:
         name = r.node.name or r.node.op.name or r.node.op.op_type.name
+        category = _categorize_op(name)
+
+        if category not in track_tids:
+            track_tids[category] = tid_counter
+            events.append({
+                "name": "thread_name", "ph": "M", "pid": 1, "tid": tid_counter,
+                "args": {"name": category},
+            })
+            tid_counter += 1
+
+        tid = track_tids[category]
+
         events.append({
             "name": name,
-            "cat": r.cost.bound,
-            "ph": "X",  # complete event
+            "cat": category,
+            "ph": "X",
             "ts": r.start_us,
-            "dur": r.cost.latency_us,
+            "dur": max(r.cost.latency_us, 0.001),  # Perfetto needs dur > 0
             "pid": 1,
-            "tid": 1,
+            "tid": tid,
             "args": {
                 "op_type": r.node.op.op_type.name,
                 "flops": r.cost.flops,
-                "bytes": r.cost.bytes_accessed,
+                "gflops": round(r.cost.flops / 1e9, 2),
+                "bytes_accessed": r.cost.bytes_accessed,
+                "mb_accessed": round(r.cost.bytes_accessed / 1e6, 2),
                 "bound": r.cost.bound,
                 "utilization": f"{r.cost.utilization:.1%}",
-                "compute_us": r.cost.compute_us,
-                "memory_us": r.cost.memory_us,
+                "compute_us": round(r.cost.compute_us, 2),
+                "memory_us": round(r.cost.memory_us, 2),
+                "latency_us": round(r.cost.latency_us, 2),
             },
         })
 
-    trace = {"traceEvents": events, "displayTimeUnit": "us"}
+    # Add summary counter track for cumulative latency
+    events.append({
+        "name": "thread_name", "ph": "M", "pid": 1, "tid": tid_counter,
+        "args": {"name": "Summary"},
+    })
+
+    trace = {
+        "traceEvents": events,
+        "displayTimeUnit": "ns",
+        "metadata": {
+            "device": device_name,
+            "total_latency_us": round(result.total_latency_us, 2),
+            "total_tflops": round(result.total_flops / 1e12, 2),
+            "total_memory_gb": round(result.total_bytes / 1e9, 2),
+            "num_ops": len(result.per_op),
+            "compute_bound_ops": result.compute_bound_count,
+            "memory_bound_ops": result.memory_bound_count,
+        },
+    }
 
     with open(filename, "w") as f:
-        json.dump(trace, f, indent=2)
+        json.dump(trace, f)
 
     return filename
+
+
+# Keep backward compatibility
+to_chrome_trace = to_perfetto_trace
 
 
 def print_timeline(result: SimResult, max_width: int = 60):
