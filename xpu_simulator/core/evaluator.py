@@ -110,15 +110,22 @@ class PerformanceEvaluator:
             bottleneck_op=bottleneck,
         )
 
-    def _run_overlap(self, graph: ComputeGraph, node_costs: dict[int, OpCost]) -> SimResult:
-        """ASAP scheduling — independent ops run in parallel.
+    @staticmethod
+    def _is_compute_saturating(cost: OpCost) -> bool:
+        """Check if an op saturates the compute unit (compute-bound and large)."""
+        return "compute" in cost.bound and cost.compute_us > 10.0
 
-        Each op starts as soon as all its predecessors finish.
-        Total latency = critical path length.
+    def _run_overlap(self, graph: ComputeGraph, node_costs: dict[int, OpCost]) -> SimResult:
+        """ASAP scheduling with resource constraints.
+
+        Each op starts as soon as all its predecessors finish AND the compute
+        unit is available. A compute-bound op that saturates the device blocks
+        other compute-bound ops from running in parallel.
         """
-        # Compute earliest start time for each node (ASAP schedule)
         earliest_end: dict[int, float] = {}
         per_op = []
+        # Track when the compute unit becomes free
+        compute_busy_until = 0.0
 
         for node in graph.topo_order():
             cost = node_costs[node.id]
@@ -130,8 +137,17 @@ class PerformanceEvaluator:
             else:
                 start = 0.0
 
+            # Resource constraint: if this op is compute-saturating,
+            # it can't start until the compute unit is free
+            if self._is_compute_saturating(cost):
+                start = max(start, compute_busy_until)
+
             end = start + cost.latency_us
             earliest_end[node.id] = end
+
+            # If this op saturates compute, block the unit until it finishes
+            if self._is_compute_saturating(cost):
+                compute_busy_until = end
 
             per_op.append(OpResult(
                 node=node, cost=cost,

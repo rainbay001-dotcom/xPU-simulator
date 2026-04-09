@@ -80,7 +80,7 @@ class MatMulEpilogueFusion(FusionRule):
     def name(self) -> str:
         return "matmul_epilogue"
 
-    _EPILOGUE_OPS = {OpType.RELU, OpType.GELU, OpType.ADD}
+    _EPILOGUE_OPS = {OpType.RELU, OpType.GELU, OpType.SILU, OpType.ADD, OpType.MUL}
 
     def match(self, graph: ComputeGraph, node: Node) -> Optional[list[Node]]:
         if node.op.op_type != OpType.MATMUL:
@@ -91,9 +91,9 @@ class MatMulEpilogueFusion(FusionRule):
         succ = succs[0]
         if succ.op.op_type not in self._EPILOGUE_OPS:
             return None
-        # Epilogue must have only this matmul as predecessor (or one other for ADD)
+        # Epilogue must have only this matmul as predecessor (or one other for ADD/MUL)
         preds = graph.predecessors(succ)
-        if succ.op.op_type == OpType.ADD:
+        if succ.op.op_type in (OpType.ADD, OpType.MUL):
             if len(preds) > 2:
                 return None
         else:
@@ -127,7 +127,8 @@ class ElementwiseChainFusion(FusionRule):
     def name(self) -> str:
         return "elementwise_chain"
 
-    _ELEM_OPS = {OpType.RELU, OpType.GELU, OpType.ADD, OpType.LAYER_NORM, OpType.SOFTMAX}
+    _ELEM_OPS = {OpType.RELU, OpType.GELU, OpType.SILU, OpType.ADD, OpType.MUL,
+                  OpType.LAYER_NORM, OpType.SOFTMAX, OpType.ROPE}
 
     def match(self, graph: ComputeGraph, node: Node) -> Optional[list[Node]]:
         if node.op.op_type not in self._ELEM_OPS:
@@ -178,20 +179,29 @@ class SwiGLUFusion(FusionRule):
     def name(self) -> str:
         return "swiglu"
 
+    # Match SiLU by OpType or by name fallback (for legacy graphs using GELU/RELU as proxy)
+    _SILU_TYPES = {OpType.GELU, OpType.RELU}
+    # Match MUL by OpType or by name fallback (for legacy graphs using ADD as proxy)
+    _MUL_TYPES = {OpType.ADD}
+
+    def _is_silu(self, node: Node) -> bool:
+        if hasattr(OpType, "SILU") and node.op.op_type == OpType.SILU:
+            return True
+        return node.op.op_type in self._SILU_TYPES and bool(node.name) and "silu" in node.name
+
+    def _is_mul(self, node: Node) -> bool:
+        if hasattr(OpType, "MUL") and node.op.op_type == OpType.MUL:
+            return True
+        return node.op.op_type in self._MUL_TYPES and bool(node.name) and "mul" in node.name
+
     def match(self, graph: ComputeGraph, node: Node) -> Optional[list[Node]]:
-        # Look for the activation (GELU/RELU used as SiLU proxy)
-        if node.op.op_type not in (OpType.GELU, OpType.RELU):
+        if not self._is_silu(node):
             return None
-        if not node.name or "silu" not in node.name:
-            return None
-        # Should have one successor that is ADD (our mul proxy)
         succs = graph.successors(node)
         if len(succs) != 1:
             return None
         mul_node = succs[0]
-        if mul_node.op.op_type != OpType.ADD:
-            return None
-        if not mul_node.name or "mul" not in mul_node.name:
+        if not self._is_mul(mul_node):
             return None
         return [node, mul_node]
 
@@ -201,7 +211,7 @@ class SwiGLUFusion(FusionRule):
         # Fused: reads silu input + gate input, writes mul output
         # Eliminates silu output intermediate
         return OpSpec(
-            op_type=OpType.GELU,
+            op_type=OpType.SILU,
             inputs=list(silu_node.op.inputs) + list(mul_node.op.inputs),
             outputs=list(mul_node.op.outputs),
             attrs={"fused": "swiglu"},
@@ -249,6 +259,9 @@ class FlashAttentionFusion(FusionRule):
         # Memory: Q + K + V inputs + output. NO O(N^2) score matrix.
         # Q,K from qk_node inputs, V from attn_v_node second input
         flash_inputs = list(qk_node.op.inputs)  # Q, K^T
+        # Add V tensor from the attn_v matmul (second input, the value matrix)
+        if len(attn_v_node.op.inputs) > 1:
+            flash_inputs.append(attn_v_node.op.inputs[1])  # V
         flash_outputs = list(attn_v_node.op.outputs)  # attention output
 
         # Memory savings: eliminate the N^2 score matrix
@@ -286,7 +299,7 @@ class NPUFormatFusion(FusionRule):
         if len(succs) != 1:
             return None
         succ = succs[0]
-        if succ.op.op_type in (OpType.RELU, OpType.GELU, OpType.ADD):
+        if succ.op.op_type in (OpType.RELU, OpType.GELU, OpType.SILU, OpType.ADD, OpType.MUL):
             preds = graph.predecessors(succ)
             if len(preds) == 1:
                 return [node, succ]

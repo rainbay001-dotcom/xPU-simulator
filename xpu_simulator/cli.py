@@ -81,6 +81,19 @@ def main():
                         help="Device name (gpu: a100/h100, npu: 910b/910c)")
     parser.add_argument("--dtype", type=str, default="fp16", choices=["fp16", "fp32", "bf16"],
                         help="Data type")
+    parser.add_argument("--extractor", type=str, default="fx",
+                        choices=["fx", "export", "onnx", "profiler", "config"],
+                        help="Graph extraction method (default: fx)")
+    parser.add_argument("--onnx-path", type=str, default=None,
+                        help="Path to ONNX model file (required for --extractor onnx)")
+    parser.add_argument("--trace-path", type=str, default=None,
+                        help="Path to profiler Chrome trace JSON (required for --extractor profiler)")
+    parser.add_argument("--config-path", type=str, default=None,
+                        help="Path to HuggingFace config.json (required for --extractor config)")
+    parser.add_argument("--batch-size", type=int, default=1,
+                        help="Batch size (used with --extractor config)")
+    parser.add_argument("--seq-len", type=int, default=1024,
+                        help="Sequence length (used with --extractor config)")
     parser.add_argument("--overlap", action="store_true",
                         help="Enable overlap modeling (parallel execution of independent ops)")
     parser.add_argument("--trace", type=str, default=None,
@@ -97,14 +110,43 @@ def main():
     cost_model = get_cost_model(args.backend, hw)
 
     # Extract model graph
-    from .frontend.torch_extractor import TorchGraphExtractor
     from .core.operator import Dtype
 
     dtype_map = {"fp16": Dtype.FP16, "fp32": Dtype.FP32, "bf16": Dtype.BF16}
-    extractor = TorchGraphExtractor(dtype=dtype_map[args.dtype])
+    dtype = dtype_map[args.dtype]
 
-    model, example_inputs = get_model(args.model)
-    graph = extractor.extract(model, example_inputs, args.model)
+    if args.extractor == "fx":
+        from .frontend.torch_extractor import TorchGraphExtractor
+        extractor = TorchGraphExtractor(dtype=dtype)
+        model, example_inputs = get_model(args.model)
+        graph = extractor.extract(model, example_inputs, args.model)
+    elif args.extractor == "export":
+        from .frontend.export_extractor import ExportExtractor
+        extractor = ExportExtractor(dtype=dtype)
+        model, example_inputs = get_model(args.model)
+        graph = extractor.extract(model, example_inputs, args.model)
+    elif args.extractor == "onnx":
+        if not args.onnx_path:
+            print("Error: --onnx-path is required when using --extractor onnx")
+            sys.exit(1)
+        from .frontend.onnx_extractor import ONNXExtractor
+        extractor = ONNXExtractor(dtype=dtype)
+        graph = extractor.extract(args.onnx_path, args.model)
+    elif args.extractor == "profiler":
+        if not args.trace_path:
+            print("Error: --trace-path is required when using --extractor profiler")
+            sys.exit(1)
+        from .frontend.profiler_extractor import ProfilerExtractor
+        extractor = ProfilerExtractor(dtype=dtype)
+        graph = extractor.extract(args.trace_path, args.model)
+    elif args.extractor == "config":
+        if not args.config_path:
+            print("Error: --config-path is required when using --extractor config")
+            sys.exit(1)
+        from .frontend.config_extractor import ConfigExtractor
+        extractor = ConfigExtractor(dtype=dtype)
+        graph = extractor.extract(args.config_path, batch_size=args.batch_size,
+                                  seq_len=args.seq_len, graph_name=args.model)
 
     # Evaluate
     from .core.evaluator import PerformanceEvaluator

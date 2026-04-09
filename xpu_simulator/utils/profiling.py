@@ -2,31 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Optional
 
 from ..core.evaluator import SimResult, OpResult
+from .categories import categorize_op
 
-
-def _categorize_op(name: str) -> str:
-    """Categorize op name into a layer type for track grouping."""
-    if ".attn_score" in name or ".attn_v" in name or ".attn_softmax" in name:
-        return "Attention Compute"
-    elif ".wq_" in name or ".wkv_" in name or ".wo" in name:
-        return "Attention Projections"
-    elif ".moe.experts" in name:
-        return "MoE Experts"
-    elif ".moe.shared" in name:
-        return "MoE Shared Expert"
-    elif ".moe.gate" in name:
-        return "MoE Gate"
-    elif ".ffn." in name:
-        return "Dense FFN"
-    elif "norm" in name:
-        return "Norms"
-    elif "rope" in name:
-        return "RoPE"
-    else:
-        return "Other"
+logger = logging.getLogger("xpu_simulator")
 
 
 def to_perfetto_trace(result: SimResult, filename: str = "trace.json", device_name: str = "Device"):
@@ -48,7 +30,7 @@ def to_perfetto_trace(result: SimResult, filename: str = "trace.json", device_na
 
     for r in result.per_op:
         name = r.node.name or r.node.op.name or r.node.op.op_type.name
-        category = _categorize_op(name)
+        category = categorize_op(name)
 
         if category not in track_tids:
             track_tids[category] = tid_counter
@@ -115,7 +97,7 @@ to_chrome_trace = to_perfetto_trace
 def print_timeline(result: SimResult, max_width: int = 60):
     """Print an ASCII timeline of the execution."""
     if not result.per_op:
-        print("(empty)")
+        logger.info("(empty)")
         return
 
     total = result.total_latency_us
@@ -124,8 +106,8 @@ def print_timeline(result: SimResult, max_width: int = 60):
 
     scale = max_width / total
 
-    print(f"Timeline (total: {total:.2f} us)")
-    print("-" * (max_width + 40))
+    logger.info("Timeline (total: %.2f us)", total)
+    logger.info("-" * (max_width + 40))
 
     for r in sorted(result.per_op, key=lambda r: r.start_us):
         name = (r.node.name or r.node.op.op_type.name)[:12].ljust(12)
@@ -134,6 +116,6 @@ def print_timeline(result: SimResult, max_width: int = 60):
         bar = " " * start_col + "#" * width
 
         bound_char = "C" if "compute" in r.cost.bound else "M"
-        print(f"  {name} |{bar:<{max_width}}| {r.cost.latency_us:7.2f} us [{bound_char}]")
+        logger.info("  %s |%-*s| %7.2f us [%s]", name, max_width, bar, r.cost.latency_us, bound_char)
 
-    print("-" * (max_width + 40))
+    logger.info("-" * (max_width + 40))

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xpu-simulator"
+version = "0.1.0"
+description = "A modular simulator for GPU and NPU performance estimation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "networkx>=3.0",
+    "torch>=2.0",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+vision = ["torchvision>=0.15"]
+onnx = ["onnx>=1.14"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+xpu-sim = "xpu_simulator.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["xpu_simulator*"]

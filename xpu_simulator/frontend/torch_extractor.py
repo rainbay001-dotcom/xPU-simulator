@@ -8,37 +8,8 @@ import torch.fx
 
 from ..core.graph import ComputeGraph
 from ..core.operator import OpSpec, TensorSpec, OpType, Dtype
-from .op_registry import OpRegistry
-
-
-def _torch_dtype_to_dtype(td: torch.dtype) -> Dtype:
-    return {
-        torch.float32: Dtype.FP32,
-        torch.float16: Dtype.FP16,
-        torch.bfloat16: Dtype.BF16,
-        torch.int8: Dtype.INT8,
-    }.get(td, Dtype.FP16)
-
-
-def _shape_from_meta(meta: dict) -> Optional[tuple[int, ...]]:
-    """Try to extract tensor shape from FX node metadata."""
-    val = meta.get("val") or meta.get("tensor_meta")
-    if val is not None:
-        if isinstance(val, torch.Tensor):
-            return tuple(val.shape)
-        if hasattr(val, "shape"):
-            return tuple(val.shape)
-    return None
-
-
-def _dtype_from_meta(meta: dict) -> Dtype:
-    val = meta.get("val") or meta.get("tensor_meta")
-    if val is not None:
-        if isinstance(val, torch.Tensor):
-            return _torch_dtype_to_dtype(val.dtype)
-        if hasattr(val, "dtype"):
-            return _torch_dtype_to_dtype(val.dtype)
-    return Dtype.FP16
+from .base import GraphExtractor
+from ._torch_utils import torch_dtype_to_dtype, shape_from_meta, dtype_from_meta
 
 
 # Map torch functions/methods to aten op names
@@ -65,12 +36,8 @@ _MODULE_MAP = {
 }
 
 
-class TorchGraphExtractor:
+class TorchGraphExtractor(GraphExtractor):
     """Extract a ComputeGraph from a PyTorch model using torch.fx tracing."""
-
-    def __init__(self, dtype: Dtype = Dtype.FP16):
-        self.dtype = dtype
-        self.registry = OpRegistry()
 
     def extract(
         self,
@@ -197,7 +164,7 @@ class TorchGraphExtractor:
                 if arg.name in shapes:
                     t = shapes[arg.name]
                     input_specs.append(TensorSpec(
-                        tuple(t.shape), _torch_dtype_to_dtype(t.dtype),
+                        tuple(t.shape), torch_dtype_to_dtype(t.dtype),
                     ))
                 elif arg.name in node_map:
                     entry = node_map[arg.name]
@@ -207,7 +174,7 @@ class TorchGraphExtractor:
         # Get output shape
         if fx_node.name in shapes:
             out_t = shapes[fx_node.name]
-            output_specs = [TensorSpec(tuple(out_t.shape), _torch_dtype_to_dtype(out_t.dtype))]
+            output_specs = [TensorSpec(tuple(out_t.shape), torch_dtype_to_dtype(out_t.dtype))]
         else:
             # Fallback: same shape as first input
             if input_specs:

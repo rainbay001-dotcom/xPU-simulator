@@ -41,6 +41,18 @@ class HardwareSpec(ABC):
         """Bandwidth of the outermost (main) memory level in GB/s."""
         return self.memory_hierarchy[-1].bandwidth_GBs
 
+    def effective_bandwidth(self, working_set_bytes: int) -> float:
+        """Return bandwidth (GB/s) of the smallest memory level that fits the working set.
+
+        Walks the hierarchy from smallest/fastest to largest/slowest.
+        If the working set fits in a level, that level's bandwidth is used.
+        Falls back to main memory bandwidth.
+        """
+        for level in self.memory_hierarchy:
+            if working_set_bytes <= level.size_bytes:
+                return level.bandwidth_GBs
+        return self.main_memory_bandwidth()
+
     def roofline_limit(self, flops: float, bytes_accessed: float, dtype: str = "fp16") -> float:
         """
         Roofline model: returns estimated latency in microseconds.

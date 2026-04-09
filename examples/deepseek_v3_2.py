@@ -1,7 +1,7 @@
 """
-DeepSeek V3.2 671B — Manual simulation on GPU and NPU.
+DeepSeek V3.2 671B — Simulation on GPU and NPU using ConfigExtractor.
 
-Architecture (from config_671B_v3.2.json):
+Architecture (from HuggingFace config):
   - 61 transformer layers (3 dense + 58 MoE)
   - dim=7168, inter_dim=18432 (dense FFN), moe_inter_dim=2048
   - 128 attention heads, MLA (Multi-head Latent Attention)
@@ -15,185 +15,45 @@ We model a single forward pass (prefill) for a given batch_size and seq_len.
 import sys
 sys.path.insert(0, ".")
 
-from xpu_simulator.core.operator import OpSpec, TensorSpec, OpType, Dtype
-from xpu_simulator.core.graph import ComputeGraph
+from xpu_simulator.core.operator import Dtype
 from xpu_simulator.core.evaluator import PerformanceEvaluator
 from xpu_simulator.backends.gpu.hardware import A100_80GB, H100_80GB
 from xpu_simulator.backends.gpu.cost_model import GPUCostModel
 from xpu_simulator.backends.npu.hardware import ASCEND_910B, ASCEND_910C
 from xpu_simulator.backends.npu.cost_model import NPUCostModel
-from xpu_simulator.utils.profiling import print_timeline
+from xpu_simulator.frontend.config_extractor import ConfigExtractor
 
 
-# ---- DeepSeek V3.2 671B Config ----
-DIM = 7168
-INTER_DIM = 18432        # dense FFN intermediate
-MOE_INTER_DIM = 2048     # expert intermediate
-N_LAYERS = 61
-N_DENSE_LAYERS = 3
-N_HEADS = 128
-Q_LORA_RANK = 1536
-KV_LORA_RANK = 512
-QK_NOPE_HEAD_DIM = 128
-QK_ROPE_HEAD_DIM = 64
-QK_HEAD_DIM = QK_NOPE_HEAD_DIM + QK_ROPE_HEAD_DIM  # 192
-V_HEAD_DIM = 128
-N_ROUTED_EXPERTS = 256
-N_ACTIVATED_EXPERTS = 8
-N_SHARED_EXPERTS = 1
-VOCAB_SIZE = 129280
+# ---- DeepSeek V3.2 671B Config (HuggingFace format) ----
+DEEPSEEK_CONFIG = {
+    "model_type": "deepseek_v2",
+    "hidden_size": 7168,
+    "num_attention_heads": 128,
+    "num_key_value_heads": 128,
+    "intermediate_size": 18432,
+    "num_hidden_layers": 61,
+    "vocab_size": 129280,
+    "hidden_act": "silu",
+    "n_routed_experts": 256,
+    "num_experts_per_tok": 8,
+    "moe_intermediate_size": 2048,
+    "n_shared_experts": 1,
+    "first_k_dense_replace": 3,
+    "kv_lora_rank": 512,
+    "q_lora_rank": 1536,
+    "qk_nope_head_dim": 128,
+    "qk_rope_head_dim": 64,
+    "v_head_dim": 128,
+}
+
+N_DENSE_LAYERS = DEEPSEEK_CONFIG["first_k_dense_replace"]
 
 
-def build_deepseek_graph(batch_size: int, seq_len: int, dtype: Dtype = Dtype.FP16) -> ComputeGraph:
+def build_deepseek_graph(batch_size: int, seq_len: int, dtype: Dtype = Dtype.FP16):
     """Build computation graph for DeepSeek V3.2 forward pass (prefill)."""
-
-    graph = ComputeGraph("DeepSeek-V3.2-671B")
-    B, S, D = batch_size, seq_len, DIM
-
-    def t(shape):
-        return TensorSpec(shape, dtype)
-
-    def add_matmul(name, M, K, N, prev_node=None):
-        op = OpSpec(OpType.MATMUL, [t((M, K)), t((K, N))], [t((M, N))], name=name)
-        node = graph.add_node(op, name)
-        if prev_node is not None:
-            graph.add_edge(prev_node, node)
-        return node
-
-    def add_elementwise(name, shape, op_type=OpType.RELU, prev_node=None):
-        op = OpSpec(op_type, [t(shape)], [t(shape)], name=name)
-        node = graph.add_node(op, name)
-        if prev_node is not None:
-            graph.add_edge(prev_node, node)
-        return node
-
-    def add_norm(name, shape, prev_node=None):
-        op = OpSpec(OpType.LAYER_NORM, [t(shape)], [t(shape)], name=name)
-        node = graph.add_node(op, name)
-        if prev_node is not None:
-            graph.add_edge(prev_node, node)
-        return node
-
-    def add_softmax(name, shape, prev_node=None):
-        op = OpSpec(OpType.SOFTMAX, [t(shape)], [t(shape)], name=name)
-        node = graph.add_node(op, name)
-        if prev_node is not None:
-            graph.add_edge(prev_node, node)
-        return node
-
-    tokens = B * S  # flattened token count for matmuls
-
-    # === Embedding ===
-    # Embedding lookup is essentially a gather — model as memory-bound
-    embed_op = OpSpec(OpType.RESHAPE, [t((B, S)), t((VOCAB_SIZE, D))], [t((B, S, D))], name="embedding")
-    prev = graph.add_node(embed_op, "embedding")
-
-    for layer_id in range(N_LAYERS):
-        prefix = f"L{layer_id}"
-        is_dense = layer_id < N_DENSE_LAYERS
-
-        # === Attention Norm (RMSNorm) ===
-        prev = add_norm(f"{prefix}.attn_norm", (tokens, D), prev)
-
-        # === MLA (Multi-head Latent Attention) ===
-        # Q path: x -> wq_a [D, Q_LORA_RANK] -> q_norm -> wq_b [Q_LORA_RANK, N_HEADS * QK_HEAD_DIM]
-        wq_a = add_matmul(f"{prefix}.wq_a", tokens, D, Q_LORA_RANK, prev)
-        q_norm = add_norm(f"{prefix}.q_norm", (tokens, Q_LORA_RANK), wq_a)
-        wq_b = add_matmul(f"{prefix}.wq_b", tokens, Q_LORA_RANK, N_HEADS * QK_HEAD_DIM, q_norm)
-
-        # KV path: x -> wkv_a [D, KV_LORA_RANK + QK_ROPE_HEAD_DIM]
-        wkv_a = add_matmul(f"{prefix}.wkv_a", tokens, D, KV_LORA_RANK + QK_ROPE_HEAD_DIM, prev)
-        kv_norm = add_norm(f"{prefix}.kv_norm", (tokens, KV_LORA_RANK), wkv_a)
-
-        # wkv_b: [KV_LORA_RANK, N_HEADS * (QK_NOPE_HEAD_DIM + V_HEAD_DIM)]
-        wkv_b = add_matmul(f"{prefix}.wkv_b", tokens, KV_LORA_RANK,
-                           N_HEADS * (QK_NOPE_HEAD_DIM + V_HEAD_DIM), kv_norm)
-
-        # RoPE (elementwise)
-        rope_q = add_elementwise(f"{prefix}.rope_q", (tokens, N_HEADS * QK_ROPE_HEAD_DIM), OpType.RELU, wq_b)
-        rope_k = add_elementwise(f"{prefix}.rope_k", (tokens, QK_ROPE_HEAD_DIM), OpType.RELU, wkv_a)
-
-        # Attention scores: Q @ K^T  [B, N_HEADS, S, S]
-        # FLOPs = B * N_HEADS * S * S * QK_HEAD_DIM * 2
-        attn_flops = B * N_HEADS * S * S * QK_HEAD_DIM * 2
-        attn_bytes = (B * N_HEADS * S * QK_HEAD_DIM * 2 + B * N_HEADS * S * S) * dtype.bytes
-        attn_score_op = OpSpec(
-            OpType.MATMUL,
-            [t((B * N_HEADS, S, QK_HEAD_DIM)), t((B * N_HEADS, QK_HEAD_DIM, S))],
-            [t((B * N_HEADS, S, S))],
-            name=f"{prefix}.attn_score",
-        )
-        attn_scores = graph.add_node(attn_score_op, f"{prefix}.attn_score")
-        graph.add_edge(rope_q, attn_scores)
-        graph.add_edge(rope_k, attn_scores)
-        graph.add_edge(wkv_b, attn_scores)
-
-        # Softmax
-        attn_softmax = add_softmax(f"{prefix}.attn_softmax", (B * N_HEADS, S, S), attn_scores)
-
-        # Attention output: scores @ V  [B, N_HEADS, S, V_HEAD_DIM]
-        attn_v = add_matmul(f"{prefix}.attn_v", B * N_HEADS * S, S, V_HEAD_DIM, attn_softmax)
-
-        # Output projection: wo [N_HEADS * V_HEAD_DIM, D]
-        wo = add_matmul(f"{prefix}.wo", tokens, N_HEADS * V_HEAD_DIM, D, attn_v)
-
-        # === FFN Norm ===
-        ffn_norm = add_norm(f"{prefix}.ffn_norm", (tokens, D), wo)
-
-        if is_dense:
-            # === Dense FFN (SwiGLU): w1, w3 [D, INTER_DIM], w2 [INTER_DIM, D] ===
-            w1 = add_matmul(f"{prefix}.ffn.w1", tokens, D, INTER_DIM, ffn_norm)
-            w3 = add_matmul(f"{prefix}.ffn.w3", tokens, D, INTER_DIM, ffn_norm)
-            silu = add_elementwise(f"{prefix}.ffn.silu", (tokens, INTER_DIM), OpType.GELU, w1)
-            mul = add_elementwise(f"{prefix}.ffn.mul", (tokens, INTER_DIM), OpType.ADD, silu)
-            graph.add_edge(w3, mul)
-            w2 = add_matmul(f"{prefix}.ffn.w2", tokens, INTER_DIM, D, mul)
-            prev = w2
-        else:
-            # === MoE Layer ===
-            # Gate: [D, N_ROUTED_EXPERTS]
-            gate = add_matmul(f"{prefix}.moe.gate", tokens, D, N_ROUTED_EXPERTS, ffn_norm)
-            gate_softmax = add_softmax(f"{prefix}.moe.gate_softmax", (tokens, N_ROUTED_EXPERTS), gate)
-
-            # Activated experts: 8 experts, each with w1,w3 [D, MOE_INTER_DIM], w2 [MOE_INTER_DIM, D]
-            # Total expert compute = N_ACTIVATED_EXPERTS * (3 matmuls per expert)
-            # We model this as aggregated matmuls since all activated tokens go through experts
-            expert_tokens = tokens  # each token goes through 8 experts
-
-            # Expert w1: [expert_tokens, D] x [D, MOE_INTER_DIM] * N_ACTIVATED_EXPERTS
-            expert_w1 = add_matmul(f"{prefix}.moe.experts_w1",
-                                   expert_tokens * N_ACTIVATED_EXPERTS, D, MOE_INTER_DIM, gate_softmax)
-            expert_w3 = add_matmul(f"{prefix}.moe.experts_w3",
-                                   expert_tokens * N_ACTIVATED_EXPERTS, D, MOE_INTER_DIM, gate_softmax)
-            expert_silu = add_elementwise(f"{prefix}.moe.experts_silu",
-                                          (expert_tokens * N_ACTIVATED_EXPERTS, MOE_INTER_DIM), OpType.GELU, expert_w1)
-            expert_mul = add_elementwise(f"{prefix}.moe.experts_mul",
-                                         (expert_tokens * N_ACTIVATED_EXPERTS, MOE_INTER_DIM), OpType.ADD, expert_silu)
-            graph.add_edge(expert_w3, expert_mul)
-            expert_w2 = add_matmul(f"{prefix}.moe.experts_w2",
-                                   expert_tokens * N_ACTIVATED_EXPERTS, MOE_INTER_DIM, D, expert_mul)
-
-            # Shared expert: MLP with inter_dim = N_SHARED_EXPERTS * MOE_INTER_DIM
-            shared_inter = N_SHARED_EXPERTS * MOE_INTER_DIM
-            shared_w1 = add_matmul(f"{prefix}.moe.shared_w1", tokens, D, shared_inter, ffn_norm)
-            shared_w3 = add_matmul(f"{prefix}.moe.shared_w3", tokens, D, shared_inter, ffn_norm)
-            shared_silu = add_elementwise(f"{prefix}.moe.shared_silu",
-                                           (tokens, shared_inter), OpType.GELU, shared_w1)
-            shared_mul = add_elementwise(f"{prefix}.moe.shared_mul",
-                                          (tokens, shared_inter), OpType.ADD, shared_silu)
-            graph.add_edge(shared_w3, shared_mul)
-            shared_w2 = add_matmul(f"{prefix}.moe.shared_w2", tokens, shared_inter, D, shared_mul)
-
-            # Combine experts + shared
-            combine = add_elementwise(f"{prefix}.moe.combine", (tokens, D), OpType.ADD, expert_w2)
-            graph.add_edge(shared_w2, combine)
-            prev = combine
-
-    # === Final Norm + LM Head ===
-    final_norm = add_norm("final_norm", (tokens, D), prev)
-    lm_head = add_matmul("lm_head", tokens, D, VOCAB_SIZE, final_norm)
-
-    return graph
+    extractor = ConfigExtractor(dtype=dtype)
+    return extractor.extract(DEEPSEEK_CONFIG, batch_size=batch_size,
+                             seq_len=seq_len, graph_name="DeepSeek-V3.2-671B")
 
 
 def run_simulation(batch_size: int, seq_len: int, dtype: Dtype = Dtype.FP16):
@@ -279,7 +139,7 @@ def run_simulation(batch_size: int, seq_len: int, dtype: Dtype = Dtype.FP16):
         op_name = r.node.name or ""
         if ".attn_score" in op_name or ".attn_v" in op_name or ".attn_softmax" in op_name:
             cat = "Attention (QKV compute)"
-        elif ".wq_" in op_name or ".wkv_" in op_name or ".wo" in op_name:
+        elif ".wq" in op_name or ".wkv" in op_name or ".wo" in op_name:
             cat = "Attention (projections)"
         elif ".moe.experts" in op_name:
             cat = "MoE Experts"
@@ -297,10 +157,9 @@ def run_simulation(batch_size: int, seq_len: int, dtype: Dtype = Dtype.FP16):
             cat = "Other"
 
         if cat not in type_stats:
-            type_stats[cat] = {"latency_us": 0, "flops": 0, "count": 0}
+            type_stats[cat] = {"latency_us": 0, "flops": 0}
         type_stats[cat]["latency_us"] += r.cost.latency_us
         type_stats[cat]["flops"] += r.cost.flops
-        type_stats[cat]["count"] += r.cost.flops  # using flops as proxy for weight
 
     total_lat = sum(v["latency_us"] for v in type_stats.values())
     print(f"  {'Category':<30} {'Latency':>12} {'% of Total':>12} {'TFLOPS':>10}")
@@ -331,15 +190,23 @@ if __name__ == "__main__":
 
     # Export interactive HTML report
     from xpu_simulator.utils.html_report import export_html_report
+
     graph = build_deepseek_graph(batch_size, seq_len)
 
     config = {
-        "dim": DIM, "inter_dim": INTER_DIM, "moe_inter_dim": MOE_INTER_DIM,
-        "n_layers": N_LAYERS, "n_dense_layers": N_DENSE_LAYERS,
-        "n_heads": N_HEADS, "n_routed_experts": N_ROUTED_EXPERTS,
-        "n_activated_experts": N_ACTIVATED_EXPERTS, "n_shared_experts": N_SHARED_EXPERTS,
-        "q_lora_rank": Q_LORA_RANK, "kv_lora_rank": KV_LORA_RANK,
-        "v_head_dim": V_HEAD_DIM, "vocab_size": VOCAB_SIZE,
+        "dim": DEEPSEEK_CONFIG["hidden_size"],
+        "inter_dim": DEEPSEEK_CONFIG["intermediate_size"],
+        "moe_inter_dim": DEEPSEEK_CONFIG["moe_intermediate_size"],
+        "n_layers": DEEPSEEK_CONFIG["num_hidden_layers"],
+        "n_dense_layers": N_DENSE_LAYERS,
+        "n_heads": DEEPSEEK_CONFIG["num_attention_heads"],
+        "n_routed_experts": DEEPSEEK_CONFIG["n_routed_experts"],
+        "n_activated_experts": DEEPSEEK_CONFIG["num_experts_per_tok"],
+        "n_shared_experts": DEEPSEEK_CONFIG["n_shared_experts"],
+        "q_lora_rank": DEEPSEEK_CONFIG["q_lora_rank"],
+        "kv_lora_rank": DEEPSEEK_CONFIG["kv_lora_rank"],
+        "v_head_dim": DEEPSEEK_CONFIG["v_head_dim"],
+        "vocab_size": DEEPSEEK_CONFIG["vocab_size"],
         "batch_size": batch_size, "seq_len": seq_len,
     }
 
@@ -356,5 +223,6 @@ if __name__ == "__main__":
         graph, results, "deepseek_v3.2_report.html",
         model_name=f"DeepSeek V3.2 671B (batch={batch_size}, seq={seq_len})",
         config=config,
+        n_dense=N_DENSE_LAYERS,
     )
     print(f"Exported: {fname}")

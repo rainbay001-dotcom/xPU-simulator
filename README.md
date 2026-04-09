@@ -91,7 +91,12 @@ model = nn.Sequential(nn.Linear(1024, 2048), nn.ReLU(), nn.Linear(2048, 512))
 graph = TorchGraphExtractor().extract(model, (torch.randn(32, 1024),))
 ```
 
-For complex models (MoE, custom kernels, dynamic control flow), build the graph manually from the model config. See `examples/deepseek_v3_2.py` for a full example.
+For complex models (MoE, custom kernels, dynamic control flow), `torch.fx` tracing may fail. Several alternatives are available:
+
+1. **`torch.compile` + export** — Use `torch.export.export()` (PyTorch 2.x) which handles a wider range of models than `torch.fx.symbolic_trace`, including dynamic control flow via graph breaks.
+2. **ONNX export** — Export the model with `torch.onnx.export()` and parse the ONNX graph to build the `ComputeGraph`. ONNX captures the full operator graph including custom ops.
+3. **Torch profiler trace** — Run the model under `torch.profiler`, export a Chrome trace, and reconstruct the graph from profiled operator calls with actual shapes.
+4. **Manual construction** — Build the graph by hand from the model config. This gives full control over operator shapes and is best when you need to model hypothetical architectures or configurations that don't have runnable code. See `examples/deepseek_v3_2.py` for a full example.
 
 ### DeepSeek V3.2 671B Example
 

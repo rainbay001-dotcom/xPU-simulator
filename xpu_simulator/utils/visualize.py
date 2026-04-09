@@ -1,6 +1,9 @@
 """Graph visualization utilities — export colored architecture diagrams."""
 from __future__ import annotations
 
+import logging
+from typing import Callable, Optional
+
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend
 import matplotlib.pyplot as plt
@@ -10,47 +13,9 @@ import numpy as np
 
 from ..core.graph import ComputeGraph
 from ..core.evaluator import SimResult, OpResult
+from .categories import categorize_op, CATEGORY_COLORS
 
-
-# Color scheme for op categories
-CATEGORY_COLORS = {
-    "Attention Projections": "#4A90D9",   # blue
-    "Attention Compute":     "#2E5EAA",   # dark blue
-    "MoE Experts":           "#E8744F",   # orange
-    "MoE Shared Expert":     "#F5A623",   # amber
-    "MoE Gate":              "#D0021B",   # red
-    "Dense FFN":             "#7ED321",   # green
-    "Norms":                 "#9B9B9B",   # gray
-    "RoPE":                  "#BD10E0",   # purple
-    "Embedding":             "#50E3C2",   # teal
-    "LM Head":               "#50E3C2",   # teal
-    "Other":                 "#C0C0C0",   # light gray
-}
-
-
-def _categorize(name: str) -> str:
-    """Categorize op by name."""
-    if ".attn_score" in name or ".attn_v" in name or ".attn_softmax" in name:
-        return "Attention Compute"
-    elif ".wq_" in name or ".wkv_" in name or ".wo" in name:
-        return "Attention Projections"
-    elif ".moe.experts" in name:
-        return "MoE Experts"
-    elif ".moe.shared" in name:
-        return "MoE Shared Expert"
-    elif ".moe.gate" in name:
-        return "MoE Gate"
-    elif ".ffn." in name:
-        return "Dense FFN"
-    elif "norm" in name:
-        return "Norms"
-    elif "rope" in name:
-        return "RoPE"
-    elif "embed" in name:
-        return "Embedding"
-    elif "lm_head" in name:
-        return "LM Head"
-    return "Other"
+logger = logging.getLogger("xpu_simulator")
 
 
 def export_block_detail(
@@ -59,6 +24,8 @@ def export_block_detail(
     filename: str = "block_detail.png",
     result: SimResult = None,
     figsize: tuple = (20, 14),
+    model_name: str = "Model",
+    categorize_fn: Callable[[str], str] = None,
 ):
     """Export a detailed view of a single transformer block.
 
@@ -71,8 +38,10 @@ def export_block_detail(
     """
     # Filter nodes for this layer
     sub_nodes = [n for n in graph.nodes if n.name and n.name.startswith(layer_prefix + ".")]
+    _cat = categorize_fn or categorize_op
+
     if not sub_nodes:
-        print(f"No nodes found with prefix '{layer_prefix}'")
+        logger.warning("No nodes found with prefix '%s'", layer_prefix)
         return
 
     # Build subgraph
@@ -101,7 +70,7 @@ def export_block_detail(
     for nid in G.nodes():
         full_name = G.nodes[nid]["full_name"]
         label = G.nodes[nid]["label"]
-        cat = _categorize(full_name)
+        cat = _cat(full_name)
         colors.append(CATEGORY_COLORS.get(cat, "#C0C0C0"))
 
         lat_str = ""
@@ -125,13 +94,13 @@ def export_block_detail(
 
     # Legend
     legend_patches = []
-    used_cats = set(_categorize(G.nodes[nid]["full_name"]) for nid in G.nodes())
+    used_cats = set(_cat(G.nodes[nid]["full_name"]) for nid in G.nodes())
     for cat, color in CATEGORY_COLORS.items():
         if cat in used_cats:
             legend_patches.append(mpatches.Patch(color=color, label=cat))
     ax.legend(handles=legend_patches, loc="upper left", fontsize=9, framealpha=0.9)
 
-    ax.set_title(f"DeepSeek V3.2 — {layer_prefix} Block Detail", fontsize=16, fontweight="bold")
+    ax.set_title(f"{model_name} — {layer_prefix} Block Detail", fontsize=16, fontweight="bold")
     ax.axis("off")
     plt.tight_layout()
     plt.savefig(filename, dpi=150, bbox_inches="tight", facecolor="white")
@@ -144,6 +113,9 @@ def export_architecture_overview(
     filename: str = "architecture_overview.png",
     result: SimResult = None,
     figsize: tuple = (24, 16),
+    model_name: str = "Model",
+    n_dense: int = 0,
+    categorize_fn: Callable[[str], str] = None,
 ):
     """Export a high-level architecture overview — one row per layer, collapsed by category.
 
@@ -154,10 +126,12 @@ def export_architecture_overview(
     layer_stats = {}  # layer_id -> {category: {latency, flops, count}}
     other_ops = []    # non-layer ops
 
+    _cat = categorize_fn or categorize_op
+
     if result:
         for r in result.per_op:
             name = r.node.name or ""
-            cat = _categorize(name)
+            cat = _cat(name)
 
             # Extract layer id
             layer_id = None
@@ -179,7 +153,7 @@ def export_architecture_overview(
                 other_ops.append((name, cat, r.cost.latency_us))
 
     if not layer_stats:
-        print("No layer data found in result")
+        logger.warning("No layer data found in result")
         return
 
     n_layers = max(layer_stats.keys()) + 1
@@ -213,16 +187,16 @@ def export_architecture_overview(
 
     ax.set_xlabel("Layer", fontsize=12)
     ax.set_ylabel("Latency (ms)", fontsize=12)
-    ax.set_title("DeepSeek V3.2 671B — Per-Layer Latency Breakdown", fontsize=16, fontweight="bold")
+    ax.set_title(f"{model_name} — Per-Layer Latency Breakdown", fontsize=16, fontweight="bold")
     ax.legend(loc="upper right", fontsize=9, ncol=2, framealpha=0.9)
 
-    # Mark dense vs MoE regions
-    n_dense = 3
-    ax.axvline(x=n_dense - 0.5, color="red", linestyle="--", alpha=0.5, linewidth=1.5)
-    ax.text(n_dense / 2, ax.get_ylim()[1] * 0.95, "Dense", ha="center", fontsize=10,
-            color="red", alpha=0.7, fontweight="bold")
-    ax.text((n_dense + n_layers) / 2, ax.get_ylim()[1] * 0.95, "MoE", ha="center", fontsize=10,
-            color="red", alpha=0.7, fontweight="bold")
+    # Mark dense vs MoE regions (only if n_dense > 0)
+    if n_dense > 0:
+        ax.axvline(x=n_dense - 0.5, color="red", linestyle="--", alpha=0.5, linewidth=1.5)
+        ax.text(n_dense / 2, ax.get_ylim()[1] * 0.95, "Dense", ha="center", fontsize=10,
+                color="red", alpha=0.7, fontweight="bold")
+        ax.text((n_dense + n_layers) / 2, ax.get_ylim()[1] * 0.95, "MoE", ha="center", fontsize=10,
+                color="red", alpha=0.7, fontweight="bold")
 
     # Show every 5th tick
     tick_step = max(1, n_layers // 15)
@@ -261,6 +235,8 @@ def export_dataflow_graph(
     max_nodes: int = 50,
     layer_filter: str = None,
     figsize: tuple = (22, 16),
+    model_name: str = "Model",
+    categorize_fn: Callable[[str], str] = None,
 ):
     """Export a colored dataflow graph (node-edge diagram).
 
@@ -271,6 +247,8 @@ def export_dataflow_graph(
         nodes = [n for n in nodes if n.name and n.name.startswith(layer_filter)]
     if len(nodes) > max_nodes:
         nodes = nodes[:max_nodes]
+
+    _cat = categorize_fn or categorize_op
 
     node_ids = {n.id for n in nodes}
     G = nx.DiGraph()
@@ -293,7 +271,7 @@ def export_dataflow_graph(
     sizes = []
     for nid in G.nodes():
         name = G.nodes[nid]["name"]
-        cat = _categorize(name)
+        cat = _cat(name)
         colors.append(CATEGORY_COLORS.get(cat, "#C0C0C0"))
 
         short = name.split(".")[-1] if "." in name else name
@@ -315,12 +293,12 @@ def export_dataflow_graph(
     nx.draw_networkx_labels(G, pos, labels, ax=ax, font_size=6, font_weight="bold")
 
     # Legend
-    used_cats = set(_categorize(G.nodes[nid]["name"]) for nid in G.nodes())
+    used_cats = set(_cat(G.nodes[nid]["name"]) for nid in G.nodes())
     legend_patches = [mpatches.Patch(color=c, label=cat)
                       for cat, c in CATEGORY_COLORS.items() if cat in used_cats]
     ax.legend(handles=legend_patches, loc="upper left", fontsize=9, framealpha=0.9)
 
-    title = "DeepSeek V3.2 — Dataflow Graph"
+    title = f"{model_name} — Dataflow Graph"
     if layer_filter:
         title += f" ({layer_filter})"
     ax.set_title(title, fontsize=16, fontweight="bold")

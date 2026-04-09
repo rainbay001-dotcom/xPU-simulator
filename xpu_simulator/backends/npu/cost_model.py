@@ -12,7 +12,11 @@ from .hardware import AscendSpec
 _CUBE_OPS = {OpType.MATMUL, OpType.CONV2D}
 
 # Ops that run on the VECTOR unit
-_VECTOR_OPS = {OpType.RELU, OpType.ADD, OpType.GELU, OpType.LAYER_NORM, OpType.SOFTMAX}
+_VECTOR_OPS = {
+    OpType.RELU, OpType.ADD, OpType.GELU, OpType.SILU, OpType.MUL,
+    OpType.LAYER_NORM, OpType.SOFTMAX, OpType.ROPE, OpType.EMBEDDING,
+    OpType.GATHER, OpType.ALL_REDUCE, OpType.ALL_TO_ALL,
+}
 
 # Data layout preferences per op type
 _LAYOUT_MAP = {
@@ -21,6 +25,13 @@ _LAYOUT_MAP = {
     OpType.RELU: "NC1HWC0",
     OpType.ADD: "NC1HWC0",
     OpType.GELU: "ND",
+    OpType.SILU: "ND",
+    OpType.MUL: "NC1HWC0",
+    OpType.ROPE: "ND",
+    OpType.EMBEDDING: "ND",
+    OpType.GATHER: "ND",
+    OpType.ALL_REDUCE: "ND",
+    OpType.ALL_TO_ALL: "ND",
     OpType.LAYER_NORM: "ND",
     OpType.SOFTMAX: "ND",
 }
@@ -61,14 +72,18 @@ class NPUCostModel(CostModel):
         cube_peak = self.hw.cube_peak_for(dtype)
         effective_peak = cube_peak * utilization
 
-        # GM bandwidth for data movement
-        gm_bw = self.hw.main_memory_bandwidth() * 1e9  # B/s
+        # Memory-hierarchy-aware bandwidth for data movement
+        bw = self.hw.effective_bandwidth(mem_bytes) * 1e9  # B/s
 
         compute_us = (flops / effective_peak * 1e6) if effective_peak > 0 else 0.0
-        memory_us = (mem_bytes / gm_bw * 1e6) if gm_bw > 0 else 0.0
+        memory_us = (mem_bytes / bw * 1e6) if bw > 0 else 0.0
 
         # Format conversion overhead (ND -> NZ or NC1HWC0)
-        format_overhead_us = self._format_conversion_cost(op, dtype)
+        # Skip if fusion pass already handled format conversion
+        if op.attrs.get("skip_format_conversion"):
+            format_overhead_us = 0.0
+        else:
+            format_overhead_us = self._format_conversion_cost(op, dtype)
 
         latency_us = max(compute_us, memory_us) + format_overhead_us
         bound = "compute (PIPE_M)" if compute_us >= memory_us else "memory"
@@ -93,10 +108,10 @@ class NPUCostModel(CostModel):
         mem_bytes = op.memory_bytes
 
         vector_peak = self.hw.vector_peak_for(dtype)
-        gm_bw = self.hw.main_memory_bandwidth() * 1e9
+        bw = self.hw.effective_bandwidth(mem_bytes) * 1e9  # B/s
 
         compute_us = (flops / vector_peak * 1e6) if vector_peak > 0 else 0.0
-        memory_us = (mem_bytes / gm_bw * 1e6) if gm_bw > 0 else 0.0
+        memory_us = (mem_bytes / bw * 1e6) if bw > 0 else 0.0
 
         # Task scheduling overhead on NPU (~3us typical)
         task_overhead_us = 3.0

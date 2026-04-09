@@ -11,8 +11,8 @@ from xpu_simulator.backends.gpu.cost_model import GPUCostModel
 from xpu_simulator.utils.profiling import print_timeline, to_chrome_trace
 
 
-def test_overlap():
-    """Two independent matmuls should overlap, halving latency."""
+def test_overlap_compute_saturating():
+    """Two independent large matmuls should NOT overlap — they both saturate compute."""
     M, K, N = 2048, 2048, 2048
     a = TensorSpec((M, K), Dtype.FP16)
     b = TensorSpec((K, N), Dtype.FP16)
@@ -21,11 +21,9 @@ def test_overlap():
     op1 = OpSpec(OpType.MATMUL, [a, b], [c], name="matmul_1")
     op2 = OpSpec(OpType.MATMUL, [a, b], [c], name="matmul_2")
 
-    # Two independent ops (no edges between them)
     graph = ComputeGraph("parallel_matmuls")
     n1 = graph.add_node(op1, "matmul_1")
     n2 = graph.add_node(op2, "matmul_2")
-    # No edge — they are independent
 
     model = GPUCostModel(A100_80GB)
     evaluator = PerformanceEvaluator(model)
@@ -33,16 +31,48 @@ def test_overlap():
     seq_result = evaluator.run(graph, overlap=False)
     par_result = evaluator.run(graph, overlap=True)
 
-    print(f"=== Overlap Test: Two Independent MatMuls ===")
+    print(f"=== Overlap Test: Two Compute-Saturating MatMuls ===")
     print(f"  Sequential: {seq_result.total_latency_us:.2f} us")
     print(f"  Parallel:   {par_result.total_latency_us:.2f} us")
     print(f"  Speedup:    {par_result.speedup_from_overlap:.2f}x")
     print()
 
-    # Parallel should be ~half of sequential (both start at t=0)
-    assert par_result.total_latency_us < seq_result.total_latency_us * 0.6, \
-        "Parallel should be significantly faster than sequential"
-    assert par_result.speedup_from_overlap > 1.5
+    # Resource-constrained scheduling: two compute-saturating ops serialize
+    assert par_result.speedup_from_overlap < 1.1, \
+        "Two compute-saturating matmuls should not overlap"
+
+
+def test_overlap_compute_with_memory_bound():
+    """A compute-bound matmul and a memory-bound elementwise should overlap."""
+    M, K, N = 2048, 2048, 2048
+    a = TensorSpec((M, K), Dtype.FP16)
+    b = TensorSpec((K, N), Dtype.FP16)
+    c = TensorSpec((M, N), Dtype.FP16)
+
+    small = TensorSpec((32, 1024), Dtype.FP16)
+
+    op1 = OpSpec(OpType.MATMUL, [a, b], [c], name="matmul_1")
+    op2 = OpSpec(OpType.RELU, [small], [small], name="relu_1")
+
+    graph = ComputeGraph("compute_plus_memory")
+    n1 = graph.add_node(op1, "matmul_1")
+    n2 = graph.add_node(op2, "relu_1")
+
+    model = GPUCostModel(A100_80GB)
+    evaluator = PerformanceEvaluator(model)
+
+    seq_result = evaluator.run(graph, overlap=False)
+    par_result = evaluator.run(graph, overlap=True)
+
+    print(f"=== Overlap Test: Compute + Memory-Bound ===")
+    print(f"  Sequential: {seq_result.total_latency_us:.2f} us")
+    print(f"  Parallel:   {par_result.total_latency_us:.2f} us")
+    print(f"  Speedup:    {par_result.speedup_from_overlap:.2f}x")
+    print()
+
+    # Memory-bound op should overlap with compute-bound op
+    assert par_result.total_latency_us < seq_result.total_latency_us, \
+        "Memory-bound op should overlap with compute-bound op"
 
 
 def test_chain_no_overlap():

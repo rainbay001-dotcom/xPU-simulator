@@ -47,7 +47,7 @@ class RooflineCostModel(CostModel):
         mem_bytes = op.memory_bytes
 
         peak = self.hw.peak_flops_for(dtype)
-        bw = self.hw.main_memory_bandwidth() * 1e9  # B/s
+        bw = self.hw.effective_bandwidth(mem_bytes) * 1e9  # B/s
 
         compute_us = (flops / peak * 1e6) if peak > 0 else 0.0
         memory_us = (mem_bytes / bw * 1e6) if bw > 0 else 0.0

@@ -15,6 +15,13 @@ class OpType(Enum):
     LAYER_NORM = auto()
     SOFTMAX = auto()
     GELU = auto()
+    SILU = auto()
+    MUL = auto()
+    ROPE = auto()
+    EMBEDDING = auto()
+    GATHER = auto()
+    ALL_REDUCE = auto()
+    ALL_TO_ALL = auto()
     TRANSPOSE = auto()
     RESHAPE = auto()
     UNKNOWN = auto()
@@ -58,14 +65,30 @@ class OpSpec:
     @property
     def flops(self) -> int:
         """Compute FLOPs for this operation."""
+        # Fused ops store pre-computed FLOPs that account for all merged ops
+        fused_flops = self.attrs.get("_fused_flops")
+        if fused_flops is not None:
+            return fused_flops
         if self.op_type == OpType.MATMUL:
             return self._matmul_flops()
         elif self.op_type == OpType.CONV2D:
             return self._conv2d_flops()
-        elif self.op_type in (OpType.RELU, OpType.ADD, OpType.GELU):
+        elif self.op_type in (OpType.RELU, OpType.ADD, OpType.GELU, OpType.SILU, OpType.MUL):
             return self._elementwise_flops()
         elif self.op_type in (OpType.LAYER_NORM, OpType.SOFTMAX):
             return self._reduction_flops()
+        elif self.op_type == OpType.ROPE:
+            # RoPE applies sin/cos rotation per head dim pair: ~6 ops per element
+            return 6 * self.inputs[0].numel
+        elif self.op_type == OpType.EMBEDDING:
+            # Embedding lookup: negligible compute, dominated by memory
+            return 0
+        elif self.op_type == OpType.GATHER:
+            # Gather/scatter: negligible compute, memory-bound
+            return 0
+        elif self.op_type in (OpType.ALL_REDUCE, OpType.ALL_TO_ALL):
+            # Collective ops: FLOPs from reduction (e.g., sum), ~1 op per element
+            return self.inputs[0].numel if self.inputs else 0
         elif self.op_type in (OpType.TRANSPOSE, OpType.RESHAPE):
             return 0
         return 0
