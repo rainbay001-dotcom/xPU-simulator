@@ -204,29 +204,42 @@ def run_simulation(batch_size: int, seq_len: int, dtype: Dtype = Dtype.FP16):
     print(f"  Batch={batch_size}, SeqLen={seq_len}, Dtype={dtype.value}")
     print(f"{'='*70}\n")
 
+    from xpu_simulator.core.fusion import FusionPass, GPU_FUSION_RULES, NPU_FUSION_RULES
+
     graph = build_deepseek_graph(batch_size, seq_len, dtype)
     print(f"Graph: {graph.num_nodes} ops, {graph.num_edges} edges\n")
 
+    # Apply fusion
+    gpu_fused, gpu_fusion_result = FusionPass(GPU_FUSION_RULES).apply(graph)
+    npu_fused, npu_fusion_result = FusionPass(NPU_FUSION_RULES).apply(graph)
+    print(f"GPU fusion: {gpu_fusion_result.original_nodes} -> {gpu_fusion_result.fused_nodes} ops ({gpu_fusion_result.nodes_eliminated} eliminated)")
+    print(f"NPU fusion: {npu_fusion_result.original_nodes} -> {npu_fusion_result.fused_nodes} ops ({npu_fusion_result.nodes_eliminated} eliminated)")
+    print()
+
     devices = [
-        ("NVIDIA A100 80GB", GPUCostModel(A100_80GB)),
-        ("NVIDIA H100 80GB", GPUCostModel(H100_80GB)),
-        ("Ascend 910B",      NPUCostModel(ASCEND_910B)),
-        ("Ascend 910C",      NPUCostModel(ASCEND_910C)),
+        ("NVIDIA A100 80GB", GPUCostModel(A100_80GB), graph, gpu_fused),
+        ("NVIDIA H100 80GB", GPUCostModel(H100_80GB), graph, gpu_fused),
+        ("Ascend 910B",      NPUCostModel(ASCEND_910B), graph, npu_fused),
+        ("Ascend 910C",      NPUCostModel(ASCEND_910C), graph, npu_fused),
     ]
 
     results = {}
-    for name, cost_model in devices:
+    for name, cost_model, orig_g, fused_g in devices:
         evaluator = PerformanceEvaluator(cost_model)
-        result = evaluator.run(graph, overlap=True)
-        results[name] = result
+        orig_result = evaluator.run(orig_g, overlap=True)
+        fused_result = evaluator.run(fused_g, overlap=True)
+        results[name] = fused_result
+        speedup = orig_result.total_latency_us / fused_result.total_latency_us
 
         print(f"--- {name} ---")
-        print(f"  Total latency:   {result.total_latency_us:,.0f} us ({result.total_latency_us / 1e6:.3f} s)")
-        print(f"  Total FLOPs:     {result.total_flops / 1e12:.2f} TFLOPS")
-        print(f"  Total memory:    {result.total_bytes / 1e9:.2f} GB")
-        print(f"  Compute-bound:   {result.compute_bound_count} ops")
-        print(f"  Memory-bound:    {result.memory_bound_count} ops")
-        print(f"  Bottleneck:      {result.bottleneck_op.node} ({result.bottleneck_op.cost.latency_us:,.0f} us)")
+        print(f"  Without fusion:  {orig_result.total_latency_us:,.0f} us ({orig_result.total_latency_us / 1e6:.3f} s)")
+        print(f"  With fusion:     {fused_result.total_latency_us:,.0f} us ({fused_result.total_latency_us / 1e6:.3f} s)")
+        print(f"  Fusion speedup:  {speedup:.2f}x")
+        print(f"  Total FLOPs:     {fused_result.total_flops / 1e12:.2f} TFLOPS")
+        print(f"  Total memory:    {fused_result.total_bytes / 1e9:.2f} GB")
+        print(f"  Compute-bound:   {fused_result.compute_bound_count} ops")
+        print(f"  Memory-bound:    {fused_result.memory_bound_count} ops")
+        print(f"  Bottleneck:      {fused_result.bottleneck_op.node} ({fused_result.bottleneck_op.cost.latency_us:,.0f} us)")
         print()
 
     # Comparison table
