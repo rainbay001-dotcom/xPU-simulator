@@ -4,6 +4,29 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ..core.operator import Dtype, QuantConfig
+
+
+@dataclass
+class AttentionPattern:
+    """Describes how attention scoring is performed.
+
+    All patterns produce the same canonical node names (attn_score, attn_softmax,
+    attn_v) but with different tensor shapes reflecting the effective context length.
+    """
+    kind: str = "dense"  # "dense", "top_k", "sliding_window", "block_sparse"
+
+    # Top-k (DSA) parameters
+    top_k: Optional[int] = None
+    num_indexer_heads: Optional[int] = None
+    indexer_dim: Optional[int] = None
+
+    # Sliding window parameters
+    window_size: Optional[int] = None
+
+    # Block sparse parameters
+    block_size: Optional[int] = None
+
 
 @dataclass
 class ModelConfig:
@@ -41,6 +64,17 @@ class ModelConfig:
     qk_rope_head_dim: Optional[int] = None
     v_head_dim: Optional[int] = None
 
+    # DSA fields (kept for backward compatibility, prefer attention_pattern)
+    dsa_num_indexer_heads: Optional[int] = None
+    dsa_k: Optional[int] = None
+    dsa_indexer_dim: Optional[int] = None
+
+    # General attention pattern (populated from DSA fields or directly)
+    attention_pattern: AttentionPattern = field(default_factory=AttentionPattern)
+
+    # Quantization
+    quant_config: Optional[QuantConfig] = None
+
     # Falcon-specific
     parallel_attn: bool = False
 
@@ -51,6 +85,11 @@ class ModelConfig:
     @property
     def is_mla(self) -> bool:
         return self.kv_lora_rank is not None
+
+    @property
+    def is_dsa(self) -> bool:
+        """True if using DeepSeek Sparse Attention."""
+        return self.attention_pattern.kind == "top_k"
 
     @property
     def qk_head_dim(self) -> int:
@@ -140,6 +179,50 @@ def normalize_config(raw: dict) -> ModelConfig:
     qk_rope_head_dim = raw.get("qk_rope_head_dim")
     v_head_dim = raw.get("v_head_dim")
 
+    # --- DSA fields ---
+    dsa_num_indexer_heads = raw.get("dsa_num_indexer_heads")
+    dsa_k = raw.get("dsa_k")
+    dsa_indexer_dim = raw.get("dsa_indexer_dim")
+
+    # --- Attention pattern ---
+    # Can be set directly via "attention_pattern" dict, or inferred from DSA/window fields
+    raw_pattern = raw.get("attention_pattern")
+    if raw_pattern and isinstance(raw_pattern, dict):
+        attention_pattern = AttentionPattern(**raw_pattern)
+    elif dsa_k is not None and dsa_k > 0:
+        attention_pattern = AttentionPattern(
+            kind="top_k", top_k=dsa_k,
+            num_indexer_heads=dsa_num_indexer_heads,
+            indexer_dim=dsa_indexer_dim,
+        )
+    elif raw.get("sliding_window"):
+        attention_pattern = AttentionPattern(
+            kind="sliding_window", window_size=raw["sliding_window"],
+        )
+    else:
+        attention_pattern = AttentionPattern(kind="dense")
+
+    # --- Quantization ---
+    quant_config = None
+    quant_raw = raw.get("quantization_config")
+    if quant_raw and isinstance(quant_raw, dict):
+        quant_method = quant_raw.get("quant_method", "")
+        bits = quant_raw.get("bits", 8)
+        group_size = quant_raw.get("group_size")
+        if quant_method in ("gptq", "awq") and bits == 4:
+            quant_config = QuantConfig(Dtype.INT4, Dtype.INT8, group_size)
+        elif quant_method in ("gptq", "awq") and bits == 8:
+            quant_config = QuantConfig(Dtype.INT8, Dtype.INT8, group_size)
+        elif quant_method == "fp8":
+            quant_config = QuantConfig(Dtype.FP8, Dtype.FP8)
+    # Allow direct quant_config dict override
+    quant_override = raw.get("quant_config")
+    if quant_override and isinstance(quant_override, dict):
+        w_dtype = Dtype(quant_override.get("weight_dtype", "fp16"))
+        a_dtype = Dtype(quant_override.get("activation_dtype", "fp16"))
+        quant_config = QuantConfig(w_dtype, a_dtype,
+                                   quant_override.get("group_size"))
+
     # --- Falcon-specific ---
     parallel_attn = raw.get("parallel_attn", False)
 
@@ -167,5 +250,10 @@ def normalize_config(raw: dict) -> ModelConfig:
         qk_nope_head_dim=qk_nope_head_dim,
         qk_rope_head_dim=qk_rope_head_dim,
         v_head_dim=v_head_dim,
+        dsa_num_indexer_heads=dsa_num_indexer_heads,
+        dsa_k=dsa_k,
+        dsa_indexer_dim=dsa_indexer_dim,
+        attention_pattern=attention_pattern,
+        quant_config=quant_config,
         parallel_attn=parallel_attn,
     )

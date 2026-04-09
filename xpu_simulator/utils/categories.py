@@ -27,6 +27,8 @@ def categorize_op(name: str) -> str:
     """
     if ".attn_score" in name or ".attn_v" in name or ".attn_softmax" in name:
         return "Attention Compute"
+    elif ".indexer_" in name or ".top_k" in name:
+        return "Attention Compute"
     elif ".wq_" in name or ".wkv_" in name or ".wo" in name:
         return "Attention Projections"
     elif ".moe.experts" in name:

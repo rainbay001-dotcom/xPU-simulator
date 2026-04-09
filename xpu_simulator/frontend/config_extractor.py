@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import ClassVar, Optional, Union
 
 from ..core.graph import ComputeGraph, Node
-from ..core.operator import OpType, Dtype
+from ..core.operator import OpType, Dtype, Phase
+from ..core.parallel import ParallelConfig
 from .base import GraphExtractor
 from .graph_builder import GraphBuilder
 from .config_normalizer import ModelConfig, normalize_config
@@ -78,12 +79,13 @@ class StandardTransformerHandler(ArchitectureHandler):
     def _build_attention(self, builder: GraphBuilder, cfg: ModelConfig,
                          prefix: str, tokens: int, B: int, S: int,
                          prev: Node) -> Node:
-        return builder.gqa_attention(
+        return builder.attention(
             f"{prefix}.attn", tokens, B, S,
             dim=cfg.hidden_size,
             n_heads=cfg.num_attention_heads,
-            n_kv_heads=cfg.num_key_value_heads,
             head_dim=cfg.head_dim,
+            pattern=cfg.attention_pattern,
+            n_kv_heads=cfg.num_key_value_heads,
             rope=cfg.rope,
             prev=prev,
         )
@@ -139,11 +141,13 @@ class DeepSeekHandler(ArchitectureHandler):
         attn_input = builder.norm(f"{prefix}.attn_norm",
                                   (tokens, cfg.hidden_size), prev)
 
-        # MLA attention
-        attn_out = builder.mla_attention(
+        # MLA attention (dense or sparse, dispatched by attention_pattern)
+        attn_out = builder.attention(
             f"{prefix}.attn", tokens, B, S,
             dim=cfg.hidden_size,
             n_heads=cfg.num_attention_heads,
+            head_dim=cfg.head_dim,
+            pattern=cfg.attention_pattern,
             q_lora_rank=cfg.q_lora_rank,
             kv_lora_rank=cfg.kv_lora_rank,
             qk_head_dim=cfg.qk_head_dim,
@@ -209,7 +213,10 @@ class ConfigExtractor(GraphExtractor):
 
     def extract(self, config: Union[str, Path, dict],  # type: ignore[override]
                 batch_size: int = 1, seq_len: int = 1024,
-                graph_name: Optional[str] = None) -> ComputeGraph:
+                graph_name: Optional[str] = None,
+                parallel_config: Optional[ParallelConfig] = None,
+                phase: str = "prefill",
+                kv_seq_len: int = 0) -> ComputeGraph:
         """Build a compute graph from a HuggingFace model config.
 
         Args:
@@ -217,6 +224,9 @@ class ConfigExtractor(GraphExtractor):
             batch_size: Batch size for the simulation.
             seq_len: Sequence length for the simulation.
             graph_name: Optional name for the graph.
+            parallel_config: Multi-device parallelism configuration.
+            phase: "prefill" or "decode".
+            kv_seq_len: KV cache sequence length (decode phase).
         """
         raw = self._load_config(config)
         cfg = normalize_config(raw)
@@ -231,23 +241,35 @@ class ConfigExtractor(GraphExtractor):
             )
         handler = handler_cls()
 
+        phase_enum = Phase.DECODE if phase == "decode" else Phase.PREFILL
+
+        # Decode: 1 new token per sequence
+        if phase_enum == Phase.DECODE:
+            effective_seq = 1
+            effective_kv = kv_seq_len or seq_len
+        else:
+            effective_seq = seq_len
+            effective_kv = 0
+
         name = graph_name or f"{cfg.model_type}-{cfg.hidden_size}"
-        builder = GraphBuilder(name, self.dtype)
-        tokens = batch_size * seq_len
+        builder = GraphBuilder(name, self.dtype, quant=cfg.quant_config,
+                               parallel=parallel_config,
+                               phase=phase_enum, kv_seq_len=effective_kv)
+        tokens = batch_size * effective_seq
 
         # Embedding
         prev = builder.embedding("embedding", cfg.vocab_size,
-                                 cfg.hidden_size, batch_size, seq_len)
+                                 cfg.hidden_size, batch_size, effective_seq)
 
         # Transformer layers
         for i in range(cfg.num_hidden_layers):
             prev = handler.build_layer(builder, cfg, i, tokens,
-                                       batch_size, seq_len, prev)
+                                       batch_size, effective_seq, prev)
 
         # Final norm
         prev = builder.norm("final_norm", (tokens, cfg.hidden_size), prev)
 
-        # LM head
+        # LM head (not quantized — always uses builder dtype)
         prev = builder.matmul("lm_head", tokens, cfg.hidden_size,
                               cfg.vocab_size, prev)
 

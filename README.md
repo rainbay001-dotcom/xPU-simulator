@@ -5,14 +5,22 @@ Given a model architecture, xPU-Simulator builds a computation graph, estimates 
 
 ## Features
 
-- Roofline-based cost model with compute/memory bound classification
-- NVIDIA GPU backend (A100, H100) with kernel launch overhead
-- Huawei Ascend NPU backend (910B, 910C) with CUBE/VECTOR pipeline modeling, tile alignment, and format conversion costs
-- PyTorch FX graph extraction for simple models
-- Manual graph construction for complex models (MoE, MLA, custom kernels)
-- Overlap (ASAP) scheduling for parallel op execution
-- Chrome tracing export for visualization
-- CLI with device comparison
+- **Roofline-based cost model** with compute/memory bound classification
+- **NVIDIA GPU backend** (A100, H100) with kernel launch overhead
+- **Huawei Ascend NPU backend** (910B, 910C) with CUBE/VECTOR pipeline modeling, tile alignment, and format conversion costs
+- **7 graph extraction methods**: FX trace, torch.export, ONNX, profiler trace, GraphBuilder DSL, ConfigExtractor, DispatchExtractor
+- **Config-driven LLM simulation** from HuggingFace `config.json` — supports 8 architectures (LLaMA, Mistral, Qwen2, Mixtral, DeepSeek, GPT-2, Falcon, GPT-NeoX)
+- **Quantization-aware modeling**: INT4/INT8/FP8 weight and activation quantization with dequantization overhead, HuggingFace `quantization_config` parsing (GPTQ, AWQ, FP8)
+- **Multi-device parallelism**: Tensor Parallelism (TP), Data Parallelism (DP), Expert Parallelism (EP) with analytical communication costs (NVLink, HCCS)
+- **Prefill and decode phases**: KV cache modeling, autoregressive decode with TTFT/TPOT metrics
+- **Serving simulation**: continuous batching scheduler, block-based KV cache allocator, throughput optimizer with SLA-aware batch sizing
+- **Empirical calibration**: profiling database with CSV persistence, calibrated cost model (measured latency on hit, analytical fallback on miss)
+- **Sparse attention patterns**: dense, top-k (DeepSeek DSA), sliding window — extensible via `AttentionPattern`
+- **Kernel fusion**: GPU (FlashAttention, SwiGLU, matmul epilogue), NPU (format conversion), and dispatch-level (RMSNorm, RoPE, FlashAttention, GroupedMatMulSwiGLU for aten-op graphs)
+- **Overlap (ASAP) scheduling** for parallel op execution with dual-pipeline support (NPU CUBE/VECTOR)
+- **Interactive HTML reports** with architecture overview, per-layer latency breakdown, serving metrics, and top-ops analysis
+- **Chrome tracing export** for visualization
+- **CLI** with device comparison
 
 ## Installation
 
@@ -21,6 +29,200 @@ pip install networkx torch
 ```
 
 ## Quick Start
+
+### Config-Driven LLM Simulation (Recommended)
+
+The simplest way to simulate an LLM is from its HuggingFace `config.json`:
+
+```python
+from xpu_simulator.frontend.config_extractor import ConfigExtractor
+from xpu_simulator.core.evaluator import PerformanceEvaluator
+from xpu_simulator.backends.gpu.cost_model import GPUCostModel
+from xpu_simulator.backends.gpu.hardware import H100_80GB
+
+# Build graph from HuggingFace config
+extractor = ConfigExtractor()
+graph = extractor.extract("path/to/config.json", batch_size=1, seq_len=1024)
+
+# Or pass a dict directly
+graph = extractor.extract({
+    "model_type": "llama",
+    "hidden_size": 4096,
+    "num_attention_heads": 32,
+    "num_key_value_heads": 8,
+    "intermediate_size": 14336,
+    "num_hidden_layers": 32,
+    "vocab_size": 128256,
+    "hidden_act": "silu",
+}, batch_size=1, seq_len=1024)
+
+# Evaluate
+result = PerformanceEvaluator(GPUCostModel(H100_80GB)).run(graph, overlap=True)
+print(result.summary())
+```
+
+### Supported Model Architectures
+
+| model_type | Attention | FFN | Examples |
+|---|---|---|---|
+| `llama` | GQA/MHA | SwiGLU | LLaMA-2/3, Code Llama |
+| `mistral` | GQA | SwiGLU | Mistral-7B |
+| `qwen2` | GQA | SwiGLU | Qwen2 |
+| `mixtral` | GQA | MoE(SwiGLU) | Mixtral-8x7B |
+| `deepseek_v2` | MLA | Dense + MoE(SwiGLU) | DeepSeek-V2/V3 |
+| `gpt2` | MHA (no RoPE) | Dense(GELU) | GPT-2 |
+| `falcon` | MQA/GQA | Dense(GELU) | Falcon-7B/40B |
+| `gpt_neox` | MHA | Dense(GELU) | GPT-NeoX, Pythia |
+
+Custom architectures can be added via `ConfigExtractor.register_handler()`.
+
+### Sparse Attention Patterns
+
+The simulator supports different attention scoring strategies via `AttentionPattern`. These change the effective context length in attention matmuls, directly affecting FLOP counts and latency estimates.
+
+**From config fields** (auto-detected):
+```python
+# DeepSeek Sparse Attention (top-k)
+config = {
+    "model_type": "deepseek_v2",
+    # ... standard fields ...
+    "dsa_num_indexer_heads": 8,
+    "dsa_k": 2048,
+    "dsa_indexer_dim": 128,
+}
+
+# Sliding window (Mistral-style)
+config = {
+    "model_type": "mistral",
+    # ... standard fields ...
+    "sliding_window": 4096,
+}
+```
+
+**Explicit pattern** (for any architecture):
+```python
+config = {
+    "model_type": "llama",
+    # ... standard fields ...
+    "attention_pattern": {"kind": "sliding_window", "window_size": 512},
+}
+```
+
+Available patterns: `"dense"` (default), `"top_k"`, `"sliding_window"`.
+
+### Quantization
+
+Simulate quantized inference with INT4/INT8/FP8 precision:
+
+```python
+# From HuggingFace quantization_config (auto-detected)
+graph = extractor.extract({
+    "model_type": "llama",
+    # ... standard fields ...
+    "quantization_config": {"quant_method": "gptq", "bits": 4, "group_size": 128},
+}, batch_size=1, seq_len=1024)
+
+# Or explicit QuantConfig
+from xpu_simulator.core.operator import Dtype, QuantConfig
+graph = extractor.extract(config, batch_size=1, seq_len=1024)
+# QuantConfig(weight_dtype=Dtype.INT4, activation_dtype=Dtype.INT8, group_size=128)
+```
+
+Supported: W8A8 (INT8 weights + activations), FP8, W4A8 (INT4 weights + INT8 activations with dequantization).
+
+### Multi-Device Parallelism
+
+Model tensor, data, and expert parallelism with communication costs:
+
+```python
+from xpu_simulator.core.parallel import ParallelConfig
+
+# TP=4 on H100 NVLink
+graph = extractor.extract(config, batch_size=1, seq_len=1024,
+                          parallel_config=ParallelConfig(tp_size=4))
+
+# EP=8 for MoE models
+graph = extractor.extract(config, batch_size=1, seq_len=1024,
+                          parallel_config=ParallelConfig(ep_size=8))
+```
+
+Communication ops (ALL_REDUCE, ALL_GATHER, ALL_TO_ALL) are analytically modeled using ring/tree algorithms and overlap with compute in the scheduler.
+
+### Prefill and Decode Phases
+
+Simulate both prefill (prompt processing) and decode (token generation):
+
+```python
+# Prefill
+graph_prefill = extractor.extract(config, batch_size=1, seq_len=1024)
+result = evaluator.run(graph_prefill, overlap=True)
+print(f"TTFT: {result.ttft_ms:.2f} ms")
+
+# Decode (autoregressive, 1 new token, reading KV cache)
+graph_decode = extractor.extract(config, batch_size=1, seq_len=1024,
+                                  phase="decode", kv_seq_len=1024)
+result = evaluator.run(graph_decode, overlap=True)
+print(f"TPOT: {result.tpot_ms:.3f} ms")
+```
+
+### Serving Simulation
+
+End-to-end inference serving with continuous batching:
+
+```python
+from xpu_simulator.serving import ServingSimulator, ServingConfig, Request
+
+cfg = ServingConfig(max_batch_size=32, max_seq_len=4096,
+                    max_tokens_budget=4096, block_size=16, num_kv_blocks=1024)
+
+sim = ServingSimulator(model_config=config, cost_model=model, serving_config=cfg)
+
+requests = [Request(id=i, prompt_len=128, output_len=64) for i in range(100)]
+metrics = sim.run(requests)
+print(metrics.summary())
+# Requests, throughput (tok/s, req/s), TTFT (avg/p50/p99), TPOT (avg/p50/p99)
+```
+
+Find the maximum batch size that meets a TPOT SLA:
+
+```python
+from xpu_simulator.serving.simulator import find_max_throughput
+
+best_batch = find_max_throughput(
+    model_config=config, cost_model=model, serving_config=cfg,
+    requests=requests, sla_tpot_ms=50.0, min_batch=1, max_batch=128,
+)
+```
+
+### Profiling Calibration
+
+Override analytical estimates with measured latencies:
+
+```python
+from xpu_simulator.core.profiling_db import ProfilingDB
+from xpu_simulator.core.cost_model import CalibratedCostModel
+
+db = ProfilingDB()
+db.store(op, measured_latency_us=42.5)
+db.save("profile.csv")  # Persist to CSV
+
+calibrated = CalibratedCostModel(base_model, db)
+cost = calibrated.estimate(op)  # Uses measured value on hit, analytical on miss
+print(f"Hit rate: {calibrated.hit_rate:.1%}")
+```
+
+### DeepSeek V3.2 671B Example
+
+```bash
+# Default: batch=1, seq_len=1024
+python examples/deepseek_v3_2.py
+
+# Custom batch size and sequence length
+python examples/deepseek_v3_2.py 4 2048
+
+# Compare dense MLA vs DSA (sparse attention)
+python examples/deepseek_v3_2.py --dsa 1 4096
+```
 
 ### CLI
 
@@ -34,6 +236,9 @@ python -m xpu_simulator.cli --model mlp --backend gpu --device a100 --overlap --
 # Compare GPU vs NPU
 python -m xpu_simulator.cli --model mlp --backend gpu --device a100 --compare npu:910b
 
+# Config-driven extraction
+python -m xpu_simulator.cli --extractor config --config-path config.json --batch-size 1 --seq-len 1024
+
 # Export Chrome trace (open with chrome://tracing or https://ui.perfetto.dev)
 python -m xpu_simulator.cli --model mlp --backend npu --device 910c --trace trace.json
 ```
@@ -46,6 +251,10 @@ python -m xpu_simulator.cli --model mlp --backend npu --device 910c --trace trac
 | `--backend` | Hardware backend: `gpu`, `npu` |
 | `--device` | Device: `a100`, `h100` (GPU) or `910b`, `910c` (NPU) |
 | `--dtype` | Data type: `fp16`, `fp32`, `bf16` |
+| `--extractor` | Graph extraction: `fx`, `export`, `onnx`, `profiler`, `config` |
+| `--config-path` | Path to HuggingFace `config.json` (with `--extractor config`) |
+| `--batch-size` | Batch size (with `--extractor config`, default: 1) |
+| `--seq-len` | Sequence length (with `--extractor config`, default: 1024) |
 | `--overlap` | Enable parallel execution of independent ops |
 | `--timeline` | Print ASCII execution timeline |
 | `--trace FILE` | Export Chrome tracing JSON |
@@ -79,73 +288,124 @@ result = PerformanceEvaluator(GPUCostModel(A100_80GB)).run(graph, overlap=True)
 print(result.summary())
 ```
 
-### PyTorch Model Extraction
+### Graph Extraction Methods
 
-For simple models that `torch.fx` can trace:
+| Method | Use Case |
+|--------|----------|
+| **ConfigExtractor** | LLMs from HuggingFace `config.json` (recommended for LLMs) |
+| **DispatchExtractor** | Any PyTorch model via `TorchDispatchMode` — handles dynamic control flow, MoE, custom ops |
+| **GraphBuilder** | Manual construction for custom/hypothetical architectures |
+| **TorchGraphExtractor** | PyTorch models via `torch.fx` (simple models only) |
+| **ExportExtractor** | PyTorch models via `torch.export` (handles more control flow) |
+| **ONNXExtractor** | ONNX model files |
+| **ProfilerExtractor** | Reconstruct from `torch.profiler` Chrome trace |
+
+### DispatchExtractor
+
+The `DispatchExtractor` intercepts every aten op at runtime via PyTorch's `TorchDispatchMode`. Unlike FX tracing, it handles dynamic control flow, data-dependent branching, and custom ops.
 
 ```python
-import torch.nn as nn
-from xpu_simulator.frontend.torch_extractor import TorchGraphExtractor
+from xpu_simulator.frontend.dispatch_extractor import DispatchExtractor
 
-model = nn.Sequential(nn.Linear(1024, 2048), nn.ReLU(), nn.Linear(2048, 512))
-graph = TorchGraphExtractor().extract(model, (torch.randn(32, 1024),))
+# From a PyTorch model
+extractor = DispatchExtractor(skip_reshapes=True)
+graph = extractor.extract(model, (input_tensor,), "my_model")
+
+# From a HuggingFace model ID (loads on meta device, no GPU needed)
+graph = extractor.extract_from_config(
+    "deepseek-ai/DeepSeek-V3",
+    batch_size=1, seq_len=4096,
+    num_hidden_layers=2,  # optional: limit layers for quick testing
+)
 ```
 
-For complex models (MoE, custom kernels, dynamic control flow), `torch.fx` tracing may fail. Several alternatives are available:
+The dispatch graph captures fine-grained aten ops (6,513 for DeepSeek V3). Apply dispatch-level fusion to consolidate them before evaluation:
 
-1. **`torch.compile` + export** — Use `torch.export.export()` (PyTorch 2.x) which handles a wider range of models than `torch.fx.symbolic_trace`, including dynamic control flow via graph breaks.
-2. **ONNX export** — Export the model with `torch.onnx.export()` and parse the ONNX graph to build the `ComputeGraph`. ONNX captures the full operator graph including custom ops.
-3. **Torch profiler trace** — Run the model under `torch.profiler`, export a Chrome trace, and reconstruct the graph from profiled operator calls with actual shapes.
-4. **Manual construction** — Build the graph by hand from the model config. This gives full control over operator shapes and is best when you need to model hypothetical architectures or configurations that don't have runnable code. See `examples/deepseek_v3_2.py` for a full example.
+```python
+from xpu_simulator.core.fusion import FusionPass, DISPATCH_FUSION_RULES
 
-### DeepSeek V3.2 671B Example
+fused_graph, result = FusionPass(DISPATCH_FUSION_RULES).apply(graph)
+print(result.summary())
+# Fusion: 6513 ops -> 3425 ops (3088 eliminated)
+# rms_norm: 245, flash_attention: 61, grouped_matmul_swiglu: 58, ...
+```
 
-```bash
-# Default: batch=1, seq_len=1024
-python examples/deepseek_v3_2.py
+### Kernel Fusion
 
-# Custom batch size and sequence length
-python examples/deepseek_v3_2.py 4 2048
+The simulator applies hardware-specific fusion passes before evaluation. There are two fusion levels:
+
+**Config-level fusion** (for ConfigExtractor graphs with named logical ops):
+```python
+from xpu_simulator.core.fusion import FusionPass, GPU_FUSION_RULES, NPU_FUSION_RULES
+
+fused_graph, result = FusionPass(GPU_FUSION_RULES).apply(graph)   # FlashAttention, SwiGLU, epilogue
+fused_graph, result = FusionPass(NPU_FUSION_RULES).apply(graph)   # + format conversion
+```
+
+**Dispatch-level fusion** (for DispatchExtractor graphs with fine-grained aten ops):
+```python
+from xpu_simulator.core.fusion import FusionPass, DISPATCH_FUSION_RULES, DISPATCH_NPU_FUSION_RULES
+
+fused_graph, result = FusionPass(DISPATCH_FUSION_RULES).apply(graph)
+fused_graph, result = FusionPass(DISPATCH_NPU_FUSION_RULES).apply(graph)
+print(result.summary())
+```
+
+Dispatch fusion rules (inspired by [msmodeling](https://github.com/huawei/msmodeling)):
+
+| Rule | Pattern | Fused Result |
+|------|---------|-------------|
+| `RMSNormFusion` | pow → mean → add → rsqrt → mul → mul | 1 LAYER_NORM |
+| `ResidualAddRMSNormFusion` | ADD + fused RMSNorm | 1 LAYER_NORM |
+| `RoPEFusion` | cos → sin → neg → mul → add | 1 ROPE |
+| `DispatchFlashAttentionFusion` | BMM → (scale/mask) → Softmax → BMM | 1 fused MATMUL |
+| `GroupedMatMulSwiGLUFusion` | grouped_mm → SILU → MUL | 1 fused MATMUL |
+
+### HTML Reports
+
+Generate interactive HTML reports with architecture diagrams and latency breakdowns:
+
+```python
+from xpu_simulator.utils.html_report import export_html_report
+
+export_html_report(graph, results, "report.html",
+                   model_name="DeepSeek V3.2 671B",
+                   config=config_dict, n_dense=3)
 ```
 
 ## Supported Hardware
 
-| Device | Type | Peak FP16 | HBM Bandwidth |
-|--------|------|-----------|----------------|
-| NVIDIA A100 80GB | GPU | 312 TFLOPS | 2039 GB/s |
-| NVIDIA H100 80GB | GPU | 989 TFLOPS | 3350 GB/s |
-| Ascend 910B | NPU | 320 TFLOPS (CUBE) | 1600 GB/s |
-| Ascend 910C | NPU | 400 TFLOPS (CUBE) | 1800 GB/s |
+| Device | Type | Peak FP16 | Peak INT8/FP8 | HBM Bandwidth | Interconnect |
+|--------|------|-----------|---------------|----------------|--------------|
+| NVIDIA A100 80GB | GPU | 312 TFLOPS | 624 TOPS (INT8) | 2039 GB/s | NVLink 600 GB/s |
+| NVIDIA H100 80GB | GPU | 989 TFLOPS | 1979 TOPS (FP8/INT8) | 3350 GB/s | NVLink 900 GB/s |
+| Ascend 910B | NPU | 320 TFLOPS (CUBE) | 640 TOPS (FP8) | 1600 GB/s | HCCS 392 GB/s |
+| Ascend 910C | NPU | 400 TFLOPS (CUBE) | 800 TOPS (FP8) | 1800 GB/s | HCCS 600 GB/s |
 
 ## Project Structure
 
 ```
 xpu_simulator/
-  core/           # Hardware-agnostic: graph, operators, cost model, evaluator
-  backends/       # Device-specific: GPU (A100/H100), NPU (910B/910C)
-  frontend/       # PyTorch FX graph extraction, op registry
-  utils/          # Roofline analysis, Chrome tracing export
+  core/           # Graph, operators, cost model, evaluator, fusion, parallelism, KV cache, profiling DB
+  backends/       # Device-specific: GPU (A100/H100), NPU (910B/910C) with interconnect specs
+  frontend/       # Graph extraction: FX, export, ONNX, profiler, config, builder, dispatch (quant/TP/EP/decode-aware)
+  serving/        # Serving simulation: scheduler, KV cache allocator, request state, metrics, throughput optimizer
+  utils/          # HTML reports, Chrome tracing, op categorization
   cli.py          # Command-line interface
 examples/         # DeepSeek V3.2 671B simulation
-tests/            # Phase 1-5 verification tests
+tests/            # 159 tests across 16 test files
 ```
 
 ## Running Tests
 
 ```bash
 python -m pytest tests/ -v
-# or run individually:
-python tests/test_phase1.py   # Roofline cost model
-python tests/test_phase2.py   # Graph + evaluator
-python tests/test_phase3.py   # PyTorch frontend
-python tests/test_phase4.py   # Ascend NPU backend
-python tests/test_phase5.py   # Overlap + profiling
 ```
 
 ## Limitations
 
-- Cost estimates are analytical (roofline-based), not cycle-accurate
-- Does not model memory capacity constraints or OOM scenarios
+- Cost estimates are analytical (roofline-based), not cycle-accurate — use profiling calibration for higher accuracy
 - NPU format conversion costs are approximate
 - MoE expert routing assumes uniform token distribution
-- No multi-GPU/multi-NPU distributed simulation yet
+- Communication costs use analytical ring/tree models (no topology-aware routing)
+- Serving simulation uses simplified continuous batching (no preemption or speculative decoding)

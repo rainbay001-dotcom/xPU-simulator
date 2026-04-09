@@ -17,6 +17,8 @@ sys.path.insert(0, ".")
 
 from xpu_simulator.core.operator import Dtype
 from xpu_simulator.core.evaluator import PerformanceEvaluator
+from xpu_simulator.core.parallel import ParallelConfig
+from xpu_simulator.core.cost_model import CommAwareCostModel
 from xpu_simulator.backends.gpu.hardware import A100_80GB, H100_80GB
 from xpu_simulator.backends.gpu.cost_model import GPUCostModel
 from xpu_simulator.backends.npu.hardware import ASCEND_910B, ASCEND_910C
@@ -48,12 +50,22 @@ DEEPSEEK_CONFIG = {
 
 N_DENSE_LAYERS = DEEPSEEK_CONFIG["first_k_dense_replace"]
 
+# ---- DeepSeek V3.2 with DSA (Sparse Attention) ----
+DEEPSEEK_DSA_CONFIG = {
+    **DEEPSEEK_CONFIG,
+    "dsa_num_indexer_heads": 8,
+    "dsa_k": 2048,
+    "dsa_indexer_dim": 128,
+}
 
-def build_deepseek_graph(batch_size: int, seq_len: int, dtype: Dtype = Dtype.FP16):
+
+def build_deepseek_graph(batch_size: int, seq_len: int, dtype: Dtype = Dtype.FP16,
+                         parallel: ParallelConfig = None):
     """Build computation graph for DeepSeek V3.2 forward pass (prefill)."""
     extractor = ConfigExtractor(dtype=dtype)
     return extractor.extract(DEEPSEEK_CONFIG, batch_size=batch_size,
-                             seq_len=seq_len, graph_name="DeepSeek-V3.2-671B")
+                             seq_len=seq_len, graph_name="DeepSeek-V3.2-671B",
+                             parallel_config=parallel)
 
 
 def run_simulation(batch_size: int, seq_len: int, dtype: Dtype = Dtype.FP16):
@@ -139,6 +151,8 @@ def run_simulation(batch_size: int, seq_len: int, dtype: Dtype = Dtype.FP16):
         op_name = r.node.name or ""
         if ".attn_score" in op_name or ".attn_v" in op_name or ".attn_softmax" in op_name:
             cat = "Attention (QKV compute)"
+        elif ".indexer_" in op_name or ".top_k" in op_name:
+            cat = "Attention (QKV compute)"
         elif ".wq" in op_name or ".wkv" in op_name or ".wo" in op_name:
             cat = "Attention (projections)"
         elif ".moe.experts" in op_name:
@@ -176,17 +190,173 @@ def run_simulation(batch_size: int, seq_len: int, dtype: Dtype = Dtype.FP16):
     print()
 
 
+def run_dsa_comparison(batch_size: int, seq_len: int, dtype: Dtype = Dtype.FP16):
+    """Compare dense MLA vs DSA at the given sequence length."""
+
+    print(f"\n{'='*70}")
+    print(f"  Dense MLA vs DSA Comparison")
+    print(f"  Batch={batch_size}, SeqLen={seq_len}, Dtype={dtype.value}")
+    print(f"{'='*70}\n")
+
+    from xpu_simulator.core.fusion import FusionPass, GPU_FUSION_RULES
+
+    extractor = ConfigExtractor(dtype=dtype)
+    dense_graph = extractor.extract(DEEPSEEK_CONFIG, batch_size=batch_size,
+                                    seq_len=seq_len, graph_name="DeepSeek-V3.2-Dense-MLA")
+    dsa_graph = extractor.extract(DEEPSEEK_DSA_CONFIG, batch_size=batch_size,
+                                  seq_len=seq_len, graph_name="DeepSeek-V3.2-DSA")
+
+    print(f"Dense MLA graph: {dense_graph.num_nodes} ops")
+    print(f"DSA graph:       {dsa_graph.num_nodes} ops\n")
+
+    cost_model = GPUCostModel(H100_80GB)
+    evaluator = PerformanceEvaluator(cost_model)
+
+    dense_result = evaluator.run(dense_graph, overlap=True)
+    dsa_result = evaluator.run(dsa_graph, overlap=True)
+
+    print(f"  {'Metric':<25} {'Dense MLA':>15} {'DSA':>15} {'Speedup':>10}")
+    print(f"  {'-'*65}")
+
+    d_lat = dense_result.total_latency_us
+    s_lat = dsa_result.total_latency_us
+    speedup = d_lat / s_lat if s_lat > 0 else 0
+
+    def fmt_lat(us):
+        if us >= 1e6:
+            return f"{us / 1e6:.3f} s"
+        return f"{us / 1e3:.1f} ms"
+
+    print(f"  {'Latency':<25} {fmt_lat(d_lat):>15} {fmt_lat(s_lat):>15} {speedup:>9.2f}x")
+    print(f"  {'Total FLOPs':<25} {dense_result.total_flops / 1e12:>14.2f}T {dsa_result.total_flops / 1e12:>14.2f}T {dense_result.total_flops / dsa_result.total_flops:>9.2f}x")
+    print(f"  {'Total Memory':<25} {dense_result.total_bytes / 1e9:>13.2f}GB {dsa_result.total_bytes / 1e9:>13.2f}GB")
+    print()
+
+
+def run_tp_comparison(batch_size: int, seq_len: int, tp_size: int = 2,
+                      dtype: Dtype = Dtype.FP16):
+    """Compare single-device vs TP-parallel on each device."""
+
+    print(f"\n{'='*70}")
+    print(f"  Single Device vs TP={tp_size} Comparison")
+    print(f"  Batch={batch_size}, SeqLen={seq_len}, Dtype={dtype.value}")
+    print(f"{'='*70}\n")
+
+    parallel = ParallelConfig(tp_size=tp_size)
+
+    graph_single = build_deepseek_graph(batch_size, seq_len, dtype)
+    graph_tp = build_deepseek_graph(batch_size, seq_len, dtype, parallel=parallel)
+
+    print(f"Single-device graph: {graph_single.num_nodes} ops, {graph_single.num_edges} edges")
+    print(f"TP={tp_size} graph:          {graph_tp.num_nodes} ops, {graph_tp.num_edges} edges")
+
+    # Count comm ops
+    from xpu_simulator.core.operator import OpType
+    comm_ops = [n for n in graph_tp.nodes
+                if n.op.op_type in (OpType.ALL_REDUCE, OpType.ALL_GATHER,
+                                     OpType.REDUCE_SCATTER, OpType.ALL_TO_ALL)]
+    print(f"Communication ops:   {len(comm_ops)} (ALL_REDUCE, ALL_GATHER, etc.)\n")
+
+    hw_configs = [
+        ("NVIDIA H100 80GB", GPUCostModel(H100_80GB), H100_80GB),
+        ("NVIDIA A100 80GB", GPUCostModel(A100_80GB), A100_80GB),
+        ("Ascend 910C",      NPUCostModel(ASCEND_910C), ASCEND_910C),
+    ]
+
+    print(f"  {'Device':<25} {'Single':>12} {'TP='+str(tp_size):>12} {'Speedup':>10} {'Comm OH':>10}")
+    print(f"  {'-'*69}")
+
+    tp_comparison_data = {
+        "tp_size": tp_size,
+        "single_ops": graph_single.num_nodes,
+        "tp_ops": graph_tp.num_nodes,
+        "comm_ops": len(comm_ops),
+        "devices": [],
+    }
+
+    for name, base_model, hw_spec in hw_configs:
+        evaluator_single = PerformanceEvaluator(base_model)
+        result_single = evaluator_single.run(graph_single, overlap=True)
+
+        # TP: use CommAwareCostModel with the device's interconnect
+        if hw_spec.interconnect:
+            comm_model = CommAwareCostModel(base_model, hw_spec.interconnect, parallel)
+        else:
+            comm_model = base_model
+        evaluator_tp = PerformanceEvaluator(comm_model)
+        result_tp = evaluator_tp.run(graph_tp, overlap=True)
+
+        speedup = result_single.total_latency_us / result_tp.total_latency_us
+        # Communication overhead: sum of comm op latencies
+        comm_lat = sum(r.cost.latency_us for r in result_tp.per_op
+                       if r.cost.bound == "communication")
+        comm_pct = comm_lat / result_tp.total_latency_us * 100 if result_tp.total_latency_us > 0 else 0
+
+        tp_comparison_data["devices"].append({
+            "name": name,
+            "single_us": round(result_single.total_latency_us, 1),
+            "tp_us": round(result_tp.total_latency_us, 1),
+            "comm_us": round(comm_lat, 1),
+        })
+
+        def fmt_lat(us):
+            if us >= 1e6:
+                return f"{us / 1e6:.3f} s"
+            return f"{us / 1e3:.1f} ms"
+
+        print(f"  {name:<25} {fmt_lat(result_single.total_latency_us):>12} "
+              f"{fmt_lat(result_tp.total_latency_us):>12} {speedup:>9.2f}x {comm_pct:>8.1f}%")
+
+    print()
+    return graph_tp, parallel, tp_comparison_data
+
+
 if __name__ == "__main__":
     # Default: batch=1, seq_len=1024 (typical prefill)
     batch_size = 1
     seq_len = 1024
+    dsa_mode = "--dsa" in sys.argv
+    tp_mode = "--tp" in sys.argv
+    tp_size = 2
 
-    if len(sys.argv) > 1:
-        batch_size = int(sys.argv[1])
-    if len(sys.argv) > 2:
-        seq_len = int(sys.argv[2])
+    # Parse --tp N
+    for i, a in enumerate(sys.argv):
+        if a == "--tp" and i + 1 < len(sys.argv) and sys.argv[i + 1].isdigit():
+            tp_size = int(sys.argv[i + 1])
+
+    # Filter out flags for positional args
+    pos_args = [a for a in sys.argv[1:] if not a.startswith("--")
+                and not (len(sys.argv) > 1 and sys.argv[sys.argv.index(a) - 1] == "--tp"
+                         if a.isdigit() else False)]
+    # Simpler: just take non-flag, non-tp-value args
+    clean_args = []
+    skip_next = False
+    for a in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if a == "--tp":
+            skip_next = True
+            continue
+        if a.startswith("--"):
+            continue
+        clean_args.append(a)
+
+    if len(clean_args) > 0:
+        batch_size = int(clean_args[0])
+    if len(clean_args) > 1:
+        seq_len = int(clean_args[1])
 
     run_simulation(batch_size, seq_len)
+
+    if dsa_mode:
+        run_dsa_comparison(batch_size, seq_len)
+
+    tp_graph = None
+    tp_parallel = None
+    tp_comparison_data = None
+    if tp_mode:
+        tp_graph, tp_parallel, tp_comparison_data = run_tp_comparison(batch_size, seq_len, tp_size)
 
     # Export interactive HTML report
     from xpu_simulator.utils.html_report import export_html_report
@@ -194,35 +364,77 @@ if __name__ == "__main__":
     graph = build_deepseek_graph(batch_size, seq_len)
 
     config = {
-        "dim": DEEPSEEK_CONFIG["hidden_size"],
-        "inter_dim": DEEPSEEK_CONFIG["intermediate_size"],
-        "moe_inter_dim": DEEPSEEK_CONFIG["moe_intermediate_size"],
-        "n_layers": DEEPSEEK_CONFIG["num_hidden_layers"],
-        "n_dense_layers": N_DENSE_LAYERS,
-        "n_heads": DEEPSEEK_CONFIG["num_attention_heads"],
-        "n_routed_experts": DEEPSEEK_CONFIG["n_routed_experts"],
-        "n_activated_experts": DEEPSEEK_CONFIG["num_experts_per_tok"],
-        "n_shared_experts": DEEPSEEK_CONFIG["n_shared_experts"],
-        "q_lora_rank": DEEPSEEK_CONFIG["q_lora_rank"],
-        "kv_lora_rank": DEEPSEEK_CONFIG["kv_lora_rank"],
-        "v_head_dim": DEEPSEEK_CONFIG["v_head_dim"],
-        "vocab_size": DEEPSEEK_CONFIG["vocab_size"],
-        "batch_size": batch_size, "seq_len": seq_len,
+        **DEEPSEEK_CONFIG,
+        "batch_size": batch_size,
+        "seq_len": seq_len,
+        "phase": "prefill",
+        "dtype": "fp16",
+        "tokens": batch_size * seq_len,
     }
+    if tp_mode:
+        config["tp_size"] = tp_size
+
+    # Build results for HTML — include both TP=1 and TP=N when --tp is used
+    hw_list = [
+        ("NVIDIA A100 80GB", GPUCostModel(A100_80GB), A100_80GB),
+        ("NVIDIA H100 80GB", GPUCostModel(H100_80GB), H100_80GB),
+        ("Ascend 910B", NPUCostModel(ASCEND_910B), ASCEND_910B),
+        ("Ascend 910C", NPUCostModel(ASCEND_910C), ASCEND_910C),
+    ]
 
     results = {}
-    for device_label, cost_model in [
-        ("NVIDIA A100 80GB", GPUCostModel(A100_80GB)),
-        ("NVIDIA H100 80GB", GPUCostModel(H100_80GB)),
-        ("Ascend 910B", NPUCostModel(ASCEND_910B)),
-        ("Ascend 910C", NPUCostModel(ASCEND_910C)),
-    ]:
-        results[device_label] = PerformanceEvaluator(cost_model).run(graph, overlap=True)
+    # Always add single-device (TP=1) results
+    for device_label, base_model, hw_spec in hw_list:
+        label = f"{device_label} (TP=1)" if tp_mode else device_label
+        results[label] = PerformanceEvaluator(base_model).run(graph, overlap=True)
+
+    # Add TP=N results when requested
+    if tp_mode and tp_graph is not None:
+        for device_label, base_model, hw_spec in hw_list:
+            if hw_spec.interconnect:
+                cm = CommAwareCostModel(base_model, hw_spec.interconnect, tp_parallel)
+            else:
+                cm = base_model
+            results[f"{device_label} (TP={tp_size})"] = PerformanceEvaluator(cm).run(tp_graph, overlap=True)
+
+    # Use the TP graph for the report if available (shows comm ops in architecture)
+    report_graph = tp_graph if tp_mode and tp_graph else graph
 
     fname = export_html_report(
-        graph, results, "deepseek_v3.2_report.html",
+        report_graph, results, "deepseek_v3.2_report.html",
         model_name=f"DeepSeek V3.2 671B (batch={batch_size}, seq={seq_len})",
         config=config,
         n_dense=N_DENSE_LAYERS,
+        tp_comparison=tp_comparison_data,
     )
     print(f"Exported: {fname}")
+
+    if dsa_mode:
+        # Export DSA HTML report
+        extractor = ConfigExtractor()
+        dsa_graph = extractor.extract(DEEPSEEK_DSA_CONFIG, batch_size=batch_size,
+                                      seq_len=seq_len, graph_name="DeepSeek-V3.2-DSA")
+        dsa_config = {
+            **DEEPSEEK_DSA_CONFIG,
+            "batch_size": batch_size,
+            "seq_len": seq_len,
+            "phase": "prefill",
+            "dtype": "fp16",
+            "tokens": batch_size * seq_len,
+        }
+        dsa_results = {}
+        for device_label, cost_model in [
+            ("NVIDIA A100 80GB", GPUCostModel(A100_80GB)),
+            ("NVIDIA H100 80GB", GPUCostModel(H100_80GB)),
+            ("Ascend 910B", NPUCostModel(ASCEND_910B)),
+            ("Ascend 910C", NPUCostModel(ASCEND_910C)),
+        ]:
+            dsa_results[device_label] = PerformanceEvaluator(cost_model).run(dsa_graph, overlap=True)
+
+        dsa_fname = export_html_report(
+            dsa_graph, dsa_results, "deepseek_v3.2_dsa_report.html",
+            model_name=f"DeepSeek V3.2 671B + DSA (batch={batch_size}, seq={seq_len})",
+            config=dsa_config,
+            n_dense=N_DENSE_LAYERS,
+        )
+        print(f"Exported: {dsa_fname}")

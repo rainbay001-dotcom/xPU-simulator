@@ -87,6 +87,31 @@ def test_flash_attention():
     print()
 
 
+def test_flash_attention_sparse():
+    """FlashAttention fusion works on sparse attention (S x k shapes)."""
+    B, H, S, D, k = 1, 128, 4096, 192, 2048
+    graph = ComputeGraph("test")
+    qk = graph.add_node(OpSpec(OpType.MATMUL,
+                                [t((B*H, S, D)), t((B*H, D, k))], [t((B*H, S, k))],
+                                name="attn_score"), "attn_score")
+    softmax = graph.add_node(OpSpec(OpType.SOFTMAX,
+                                     [t((B*H, S, k))], [t((B*H, S, k))],
+                                     name="softmax"), "softmax")
+    attn_v = graph.add_node(OpSpec(OpType.MATMUL,
+                                    [t((B*H, S, k)), t((B*H, k, 128))], [t((B*H, S, 128))],
+                                    name="attn_v"), "attn_v")
+    graph.add_edge(qk, softmax)
+    graph.add_edge(softmax, attn_v)
+
+    fused, result = FusionPass([FlashAttentionFusion()]).apply(graph)
+    assert fused.num_nodes == 1, f"Sparse attention should fuse, got {fused.num_nodes}"
+
+    # Verify fused op has correct combined FLOPs
+    fused_node = fused.topo_order()[0]
+    expected_flops = sum(n.op.flops for n in graph.topo_order())
+    assert fused_node.op.flops == expected_flops
+
+
 def test_swiglu():
     """SiLU + gate multiply should fuse."""
     graph = ComputeGraph("test")

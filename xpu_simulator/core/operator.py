@@ -24,7 +24,16 @@ class OpType(Enum):
     ALL_TO_ALL = auto()
     TRANSPOSE = auto()
     RESHAPE = auto()
+    TOP_K = auto()
+    DEQUANT = auto()
+    ALL_GATHER = auto()
+    REDUCE_SCATTER = auto()
     UNKNOWN = auto()
+
+
+class Phase(Enum):
+    PREFILL = "prefill"
+    DECODE = "decode"
 
 
 class Dtype(Enum):
@@ -33,10 +42,23 @@ class Dtype(Enum):
     BF16 = "bf16"
     INT8 = "int8"
     FP8 = "fp8"
+    INT4 = "int4"
 
     @property
-    def bytes(self) -> int:
-        return {"fp32": 4, "fp16": 2, "bf16": 2, "int8": 1, "fp8": 1}[self.value]
+    def bytes(self) -> float:
+        return {"fp32": 4, "fp16": 2, "bf16": 2, "int8": 1, "fp8": 1, "int4": 0.5}[self.value]
+
+
+@dataclass
+class QuantConfig:
+    """Quantization configuration for linear layers.
+
+    weight_dtype / activation_dtype control the dtypes of weight and activation
+    tensors in the matmul.  group_size is used for INT4 group quantization.
+    """
+    weight_dtype: Dtype = Dtype.FP16
+    activation_dtype: Dtype = Dtype.FP16
+    group_size: Optional[int] = None
 
 
 @dataclass
@@ -51,7 +73,7 @@ class TensorSpec:
 
     @property
     def size_bytes(self) -> int:
-        return self.numel * self.dtype.bytes
+        return int(self.numel * self.dtype.bytes)
 
 
 @dataclass
@@ -73,7 +95,8 @@ class OpSpec:
             return self._matmul_flops()
         elif self.op_type == OpType.CONV2D:
             return self._conv2d_flops()
-        elif self.op_type in (OpType.RELU, OpType.ADD, OpType.GELU, OpType.SILU, OpType.MUL):
+        elif self.op_type in (OpType.RELU, OpType.ADD, OpType.GELU, OpType.SILU, OpType.MUL,
+                              OpType.TOP_K):
             return self._elementwise_flops()
         elif self.op_type in (OpType.LAYER_NORM, OpType.SOFTMAX):
             return self._reduction_flops()
@@ -86,9 +109,15 @@ class OpSpec:
         elif self.op_type == OpType.GATHER:
             # Gather/scatter: negligible compute, memory-bound
             return 0
+        elif self.op_type == OpType.DEQUANT:
+            # Dequantize: ~2 ops per element (scale + zero-point)
+            return 2 * self.inputs[0].numel if self.inputs else 0
         elif self.op_type in (OpType.ALL_REDUCE, OpType.ALL_TO_ALL):
             # Collective ops: FLOPs from reduction (e.g., sum), ~1 op per element
             return self.inputs[0].numel if self.inputs else 0
+        elif self.op_type in (OpType.ALL_GATHER, OpType.REDUCE_SCATTER):
+            # Communication ops: no compute, bandwidth-dominated
+            return 0
         elif self.op_type in (OpType.TRANSPOSE, OpType.RESHAPE):
             return 0
         return 0

@@ -102,6 +102,9 @@ def test_categorize_op():
     assert categorize_op("L0.rope_q") == "RoPE"
     assert categorize_op("embedding") == "Embedding"
     assert categorize_op("lm_head") == "LM Head"
+    assert categorize_op("L0.attn.indexer_q") == "Attention Compute"
+    assert categorize_op("L0.attn.indexer_score") == "Attention Compute"
+    assert categorize_op("L0.attn.top_k") == "Attention Compute"
     assert categorize_op("unknown_op") == "Other"
     print("  categorize_op: all categories correct")
 

@@ -3,9 +3,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Optional, TYPE_CHECKING
 
 from .hardware import HardwareSpec
-from .operator import OpSpec
+from .operator import OpSpec, OpType
+from .parallel import InterconnectSpec, ParallelConfig
+
+if TYPE_CHECKING:
+    from .profiling_db import ProfilingDB
 
 
 @dataclass
@@ -69,4 +74,97 @@ class RooflineCostModel(CostModel):
             flops=flops,
             bytes_accessed=mem_bytes,
             utilization=min(utilization, 1.0),
+        )
+
+
+class CalibratedCostModel(CostModel):
+    """Wraps a cost model and overrides with measured latencies when available.
+
+    On hit: uses measured latency_us from ProfilingDB.
+    On miss: falls back to analytical base model.
+    """
+
+    def __init__(self, base: CostModel, db: "ProfilingDB"):
+        super().__init__(base.hw)
+        self.base = base
+        self.db = db
+        self._hits = 0
+        self._misses = 0
+
+    def estimate(self, op: OpSpec) -> OpCost:
+        measured = self.db.lookup(op)
+        if measured is not None:
+            self._hits += 1
+            # Use measured latency but keep analytical breakdown for info
+            analytical = self.base.estimate(op)
+            return OpCost(
+                compute_us=analytical.compute_us,
+                memory_us=analytical.memory_us,
+                latency_us=measured,
+                bound=analytical.bound,
+                flops=analytical.flops,
+                bytes_accessed=analytical.bytes_accessed,
+                utilization=analytical.utilization,
+            )
+        self._misses += 1
+        return self.base.estimate(op)
+
+    @property
+    def hit_rate(self) -> float:
+        total = self._hits + self._misses
+        return self._hits / total if total > 0 else 0.0
+
+    @property
+    def total_queries(self) -> int:
+        return self._hits + self._misses
+
+
+_COMM_OPS = {OpType.ALL_REDUCE, OpType.ALL_GATHER,
+             OpType.REDUCE_SCATTER, OpType.ALL_TO_ALL}
+
+
+class CommAwareCostModel(CostModel):
+    """Wraps a compute cost model and handles communication ops via interconnect."""
+
+    def __init__(self, base: CostModel, interconnect: InterconnectSpec,
+                 parallel: ParallelConfig):
+        super().__init__(base.hw)
+        self.base = base
+        self.interconnect = interconnect
+        self.parallel = parallel
+
+    def estimate(self, op: OpSpec) -> OpCost:
+        if op.op_type in _COMM_OPS:
+            return self._estimate_comm(op)
+        return self.base.estimate(op)
+
+    def _estimate_comm(self, op: OpSpec) -> OpCost:
+        from .communication import (
+            all_reduce_time, all_gather_time,
+            reduce_scatter_time, all_to_all_time,
+        )
+
+        msg_bytes = op.memory_bytes
+        n_ranks = op.attrs.get("n_ranks", self.parallel.tp_size)
+
+        if op.op_type == OpType.ALL_REDUCE:
+            cc = all_reduce_time(msg_bytes, n_ranks, self.interconnect)
+        elif op.op_type == OpType.ALL_GATHER:
+            cc = all_gather_time(msg_bytes, n_ranks, self.interconnect)
+        elif op.op_type == OpType.REDUCE_SCATTER:
+            cc = reduce_scatter_time(msg_bytes, n_ranks, self.interconnect)
+        elif op.op_type == OpType.ALL_TO_ALL:
+            cc = all_to_all_time(msg_bytes, n_ranks, self.interconnect)
+        else:
+            cc = None
+
+        latency = cc.latency_us if cc else 0.0
+        return OpCost(
+            compute_us=0.0,
+            memory_us=latency,
+            latency_us=latency,
+            bound="communication",
+            flops=0,
+            bytes_accessed=msg_bytes,
+            utilization=0.0,
         )

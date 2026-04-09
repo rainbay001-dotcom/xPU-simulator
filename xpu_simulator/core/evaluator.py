@@ -25,6 +25,7 @@ class SimResult:
     per_op: list[OpResult]
     bottleneck_op: OpResult
     critical_path: list[OpResult] = field(default_factory=list)
+    phase: str | None = None  # "prefill" or "decode"
 
     @property
     def total_flops(self) -> int:
@@ -46,6 +47,20 @@ class SimResult:
     def sequential_latency_us(self) -> float:
         """What the latency would be without any overlap."""
         return sum(r.cost.latency_us for r in self.per_op)
+
+    @property
+    def ttft_ms(self) -> float | None:
+        """Time to first token (prefill latency) in ms."""
+        if self.phase == "prefill":
+            return self.total_latency_us / 1000
+        return None
+
+    @property
+    def tpot_ms(self) -> float | None:
+        """Time per output token (decode latency) in ms."""
+        if self.phase == "decode":
+            return self.total_latency_us / 1000
+        return None
 
     @property
     def speedup_from_overlap(self) -> float:
@@ -115,17 +130,33 @@ class PerformanceEvaluator:
         """Check if an op saturates the compute unit (compute-bound and large)."""
         return "compute" in cost.bound and cost.compute_us > 10.0
 
-    def _run_overlap(self, graph: ComputeGraph, node_costs: dict[int, OpCost]) -> SimResult:
-        """ASAP scheduling with resource constraints.
+    @staticmethod
+    def _get_resource_type(cost: OpCost) -> str:
+        """Determine which hardware resource an op uses.
 
-        Each op starts as soon as all its predecessors finish AND the compute
-        unit is available. A compute-bound op that saturates the device blocks
-        other compute-bound ops from running in parallel.
+        On Ascend NPU, CUBE (PIPE_M) and VECTOR (PIPE_V) are independent
+        pipelines that can run concurrently. Communication ops use a separate
+        resource. On GPU, all compute ops share one resource.
+        """
+        if cost.bound == "communication":
+            return "comm"
+        if "PIPE_M" in cost.bound:
+            return "cube"
+        elif "PIPE_V" in cost.bound:
+            return "vector"
+        return "shared"
+
+    def _run_overlap(self, graph: ComputeGraph, node_costs: dict[int, OpCost]) -> SimResult:
+        """ASAP scheduling with per-resource constraints.
+
+        Models dual-pipeline overlap: CUBE and VECTOR ops can run concurrently
+        on Ascend NPU (they use separate hardware units). On GPU, all compute
+        ops fall to "shared" resource and serialize as before.
         """
         earliest_end: dict[int, float] = {}
         per_op = []
-        # Track when the compute unit becomes free
-        compute_busy_until = 0.0
+        # Track when each resource becomes free
+        resource_busy = {"cube": 0.0, "vector": 0.0, "shared": 0.0, "comm": 0.0}
 
         for node in graph.topo_order():
             cost = node_costs[node.id]
@@ -137,17 +168,18 @@ class PerformanceEvaluator:
             else:
                 start = 0.0
 
-            # Resource constraint: if this op is compute-saturating,
-            # it can't start until the compute unit is free
+            # Resource constraint: saturating ops block their own resource
             if self._is_compute_saturating(cost):
-                start = max(start, compute_busy_until)
+                res = self._get_resource_type(cost)
+                start = max(start, resource_busy[res])
 
             end = start + cost.latency_us
             earliest_end[node.id] = end
 
-            # If this op saturates compute, block the unit until it finishes
+            # Block the resource until this op finishes
             if self._is_compute_saturating(cost):
-                compute_busy_until = end
+                res = self._get_resource_type(cost)
+                resource_busy[res] = end
 
             per_op.append(OpResult(
                 node=node, cost=cost,

@@ -401,6 +401,235 @@ def test_config_extractor_supported_architectures():
     assert "gpt2" in archs
 
 
+DEEPSEEK_DSA_CONFIG = {
+    **DEEPSEEK_CONFIG,
+    "dsa_num_indexer_heads": 8,
+    "dsa_k": 2048,
+    "dsa_indexer_dim": 128,
+}
+
+
+def test_dsa_mla_attention_composite():
+    """DSA MLA attention produces more nodes than dense MLA (indexer path + sparse attention)."""
+    b = GraphBuilder("test", Dtype.FP16)
+    prev = b.norm("norm", (128, 7168))
+
+    # Dense MLA for comparison
+    b2 = GraphBuilder("test2", Dtype.FP16)
+    prev2 = b2.norm("norm", (128, 7168))
+    b2.mla_attention("attn", tokens=128, B=1, S=128, dim=7168, n_heads=128,
+                     q_lora_rank=1536, kv_lora_rank=512, qk_head_dim=192,
+                     qk_rope_head_dim=64, v_head_dim=128, prev=prev2)
+    dense_graph = b2.build()
+
+    # DSA MLA
+    b.dsa_mla_attention("attn", tokens=128, B=1, S=128, dim=7168, n_heads=128,
+                        q_lora_rank=1536, kv_lora_rank=512, qk_head_dim=192,
+                        qk_rope_head_dim=64, v_head_dim=128,
+                        n_indexer_heads=8, dsa_k=2048, indexer_dim=128,
+                        prev=prev)
+    dsa_graph = b.build()
+
+    # Dense MLA: norm + wq_a, q_norm, wq_b, wkv_a, kv_norm, wkv_b,
+    #            rope_q, rope_k, attn_score, softmax, attn_v, wo = 13
+    assert dense_graph.num_nodes == 13
+
+    # DSA MLA: norm + wq_a, q_norm, wq_b, wkv_a, kv_norm, wkv_b,
+    #          rope_q, rope_k (shared MLA projection = 9) +
+    #          indexer_q, indexer_k, indexer_score, indexer_relu, top_k (5) +
+    #          attn_score, attn_softmax, attn_v, wo (4) = 18
+    assert dsa_graph.num_nodes == 18
+
+
+def test_config_extractor_deepseek_dsa():
+    """DeepSeek config with DSA produces a valid graph."""
+    ext = ConfigExtractor(dtype=Dtype.FP16)
+    graph = ext.extract(DEEPSEEK_DSA_CONFIG, batch_size=1, seq_len=128)
+
+    assert isinstance(graph, ComputeGraph)
+    assert graph.num_nodes > 0
+    assert graph.num_edges > 0
+
+    # DSA graph should have more nodes than dense MLA graph per layer
+    dense_graph = ext.extract(DEEPSEEK_CONFIG, batch_size=1, seq_len=128)
+    assert graph.num_nodes > dense_graph.num_nodes
+
+
+def test_normalize_deepseek_dsa():
+    """DSA config fields are normalized correctly."""
+    cfg = normalize_config(DEEPSEEK_DSA_CONFIG)
+    assert cfg.is_dsa is True
+    assert cfg.dsa_num_indexer_heads == 8
+    assert cfg.dsa_k == 2048
+    assert cfg.dsa_indexer_dim == 128
+    assert cfg.is_mla is True  # DSA is on top of MLA
+
+
+def test_dsa_reduces_attention_flops():
+    """DSA should have lower total FLOPs than dense MLA at longer sequences."""
+    ext = ConfigExtractor(dtype=Dtype.FP16)
+
+    # Use a small model for speed: 1 dense + 1 MoE layer
+    small_dense = {
+        **DEEPSEEK_CONFIG,
+        "num_hidden_layers": 2,
+        "first_k_dense_replace": 1,
+    }
+    small_dsa = {
+        **small_dense,
+        "dsa_num_indexer_heads": 8,
+        "dsa_k": 256,       # k << seq_len
+        "dsa_indexer_dim": 128,
+    }
+
+    # At seq_len=4096, DSA should save significant attention FLOPs
+    dense_graph = ext.extract(small_dense, batch_size=1, seq_len=4096)
+    dsa_graph = ext.extract(small_dsa, batch_size=1, seq_len=4096)
+
+    # Sum up FLOPs from all ops
+    dense_flops = sum(n.op.flops for n in dense_graph.nodes)
+    dsa_flops = sum(n.op.flops for n in dsa_graph.nodes)
+
+    # DSA should be cheaper overall (indexer adds some, but sparse attention saves more)
+    assert dsa_flops < dense_flops, (
+        f"DSA ({dsa_flops / 1e9:.1f} GFLOPs) should be cheaper than "
+        f"dense MLA ({dense_flops / 1e9:.1f} GFLOPs)"
+    )
+
+
+def test_attention_pattern_normalization():
+    """AttentionPattern is populated correctly from different config styles."""
+    from xpu_simulator.frontend.config_normalizer import AttentionPattern
+
+    # DSA fields → top_k pattern
+    cfg = normalize_config(DEEPSEEK_DSA_CONFIG)
+    assert cfg.attention_pattern.kind == "top_k"
+    assert cfg.attention_pattern.top_k == 2048
+    assert cfg.attention_pattern.num_indexer_heads == 8
+    assert cfg.attention_pattern.indexer_dim == 128
+
+    # Dense model → dense pattern
+    cfg2 = normalize_config(LLAMA_CONFIG)
+    assert cfg2.attention_pattern.kind == "dense"
+
+    # Sliding window via HuggingFace field
+    sw_config = {**LLAMA_CONFIG, "sliding_window": 4096}
+    cfg3 = normalize_config(sw_config)
+    assert cfg3.attention_pattern.kind == "sliding_window"
+    assert cfg3.attention_pattern.window_size == 4096
+
+    # Direct attention_pattern dict
+    direct_config = {
+        **LLAMA_CONFIG,
+        "attention_pattern": {"kind": "sliding_window", "window_size": 512},
+    }
+    cfg4 = normalize_config(direct_config)
+    assert cfg4.attention_pattern.kind == "sliding_window"
+    assert cfg4.attention_pattern.window_size == 512
+
+
+def test_sliding_window_attention():
+    """Sliding window via attention() dispatcher produces correct node count."""
+    from xpu_simulator.frontend.config_normalizer import AttentionPattern
+
+    b = GraphBuilder("test", Dtype.FP16)
+    prev = b.norm("norm", (1024, 4096))
+    pattern = AttentionPattern(kind="sliding_window", window_size=512)
+    out = b.attention("attn", tokens=1024, B=1, S=1024, dim=4096,
+                      n_heads=32, head_dim=128, pattern=pattern,
+                      n_kv_heads=8, rope=True, prev=prev)
+    graph = b.build()
+
+    # Same node count as GQA: norm + wq, wk, wv, rope_q, rope_k,
+    #   attn_score, attn_softmax, attn_v, wo = 10
+    assert graph.num_nodes == 10
+    assert out.name == "attn.wo"
+
+
+def test_sliding_window_reduces_flops():
+    """Sliding window FLOPs scale with window_size, not S."""
+    from xpu_simulator.frontend.config_normalizer import AttentionPattern
+
+    def build_with_pattern(pattern, seq_len):
+        b = GraphBuilder("test", Dtype.FP16)
+        prev = b.norm("norm", (seq_len, 4096))
+        b.attention("attn", tokens=seq_len, B=1, S=seq_len, dim=4096,
+                    n_heads=32, head_dim=128, pattern=pattern,
+                    n_kv_heads=8, rope=True, prev=prev)
+        g = b.build()
+        return sum(n.op.flops for n in g.nodes)
+
+    dense = AttentionPattern(kind="dense")
+    window = AttentionPattern(kind="sliding_window", window_size=512)
+
+    # At seq_len=4096, sliding window should be much cheaper
+    dense_flops = build_with_pattern(dense, 4096)
+    window_flops = build_with_pattern(window, 4096)
+    assert window_flops < dense_flops, (
+        f"Window ({window_flops/1e9:.1f}G) should be < dense ({dense_flops/1e9:.1f}G)"
+    )
+
+    # At seq_len=512 (== window), should be roughly the same
+    dense_512 = build_with_pattern(dense, 512)
+    window_512 = build_with_pattern(window, 512)
+    assert dense_512 == window_512, "At S==window, FLOPs should match"
+
+
+def test_sliding_window_config_extractor():
+    """Mistral-style sliding window config works end-to-end."""
+    mistral_sw = {
+        "model_type": "mistral",
+        "hidden_size": 4096,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 8,
+        "intermediate_size": 14336,
+        "num_hidden_layers": 2,
+        "vocab_size": 32000,
+        "hidden_act": "silu",
+        "sliding_window": 4096,
+    }
+    ext = ConfigExtractor(dtype=Dtype.FP16)
+    graph = ext.extract(mistral_sw, batch_size=1, seq_len=8192)
+
+    assert isinstance(graph, ComputeGraph)
+    assert graph.num_nodes > 0
+
+    # Compare with dense — should have fewer FLOPs
+    dense_config = {k: v for k, v in mistral_sw.items() if k != "sliding_window"}
+    dense_graph = ext.extract(dense_config, batch_size=1, seq_len=8192)
+    sw_flops = sum(n.op.flops for n in graph.nodes)
+    dense_flops = sum(n.op.flops for n in dense_graph.nodes)
+    assert sw_flops < dense_flops
+
+
+def test_attention_dispatcher_mla():
+    """attention() with MLA projection + dense scoring matches mla_attention()."""
+    from xpu_simulator.frontend.config_normalizer import AttentionPattern
+
+    # Via mla_attention directly
+    b1 = GraphBuilder("test1", Dtype.FP16)
+    prev1 = b1.norm("norm", (128, 7168))
+    b1.mla_attention("attn", tokens=128, B=1, S=128, dim=7168, n_heads=128,
+                     q_lora_rank=1536, kv_lora_rank=512, qk_head_dim=192,
+                     qk_rope_head_dim=64, v_head_dim=128, prev=prev1)
+    g1 = b1.build()
+
+    # Via attention() dispatcher
+    b2 = GraphBuilder("test2", Dtype.FP16)
+    prev2 = b2.norm("norm", (128, 7168))
+    b2.attention("attn", tokens=128, B=1, S=128, dim=7168, n_heads=128,
+                 head_dim=56, pattern=AttentionPattern(kind="dense"),
+                 q_lora_rank=1536, kv_lora_rank=512, qk_head_dim=192,
+                 qk_rope_head_dim=64, v_head_dim=128, prev=prev2)
+    g2 = b2.build()
+
+    assert g1.num_nodes == g2.num_nodes
+    # Same FLOPs
+    f1 = sum(n.op.flops for n in g1.nodes)
+    f2 = sum(n.op.flops for n in g2.nodes)
+    assert f1 == f2
+
+
 if __name__ == "__main__":
     import pytest
     pytest.main([__file__, "-v"])

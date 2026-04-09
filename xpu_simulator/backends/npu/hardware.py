@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from ...core.hardware import HardwareSpec, MemLevel
+from ...core.parallel import InterconnectSpec
 
 
 class AscendSpec(HardwareSpec):
@@ -32,13 +33,28 @@ class AscendSpec(HardwareSpec):
         l1_bw_GBs: float,     # L1 bandwidth
         l2_bw_GBs: float,
         gm_bw_GBs: float,     # Global memory (HBM) bandwidth
+        *,
+        # CA-model pipeline parameters
+        mte_bw_GBs: float = 0.0,           # Per-core MTE bandwidth GM→UB
+        mte_l2_bw_GBs: float = 0.0,        # Per-core MTE bandwidth L2→UB
+        double_buffer: bool = True,          # Double-buffering enabled
+        pipeline_startup_us: float = 2.0,    # Pipeline fill latency
+        pipeline_drain_us: float = 1.0,      # Pipeline drain latency
+        interconnect: InterconnectSpec | None = None,
     ):
         self._name = name
+        self.interconnect = interconnect
         self.ai_core_count = ai_core_count
         self._cube_peak = cube_peak_tflops
         self._vector_peak = vector_peak_tflops
         self.cube_tile_size = cube_tile_size
         self.ub_size_kb = ub_size_kb
+        # CA-model pipeline params (default MTE bw from aggregate / core_count)
+        self.mte_bw_GBs = mte_bw_GBs if mte_bw_GBs > 0 else gm_bw_GBs / ai_core_count
+        self.mte_l2_bw_GBs = mte_l2_bw_GBs if mte_l2_bw_GBs > 0 else self.mte_bw_GBs * 2
+        self.double_buffer = double_buffer
+        self.pipeline_startup_us = pipeline_startup_us
+        self.pipeline_drain_us = pipeline_drain_us
 
         self._peak_flops = {}
         for dtype in set(list(cube_peak_tflops.keys()) + list(vector_peak_tflops.keys())):
@@ -76,6 +92,14 @@ class AscendSpec(HardwareSpec):
         """VECTOR unit peak FLOPS for a given dtype."""
         return self._vector_peak.get(dtype, 0) * 1e12
 
+    def per_core_cube_peak(self, dtype: str) -> float:
+        """CUBE peak FLOPS for a single AI core."""
+        return self.cube_peak_for(dtype) / self.ai_core_count
+
+    def per_core_vector_peak(self, dtype: str) -> float:
+        """VECTOR peak FLOPS for a single AI core."""
+        return self.vector_peak_for(dtype) / self.ai_core_count
+
     def get_mem_level(self, name: str) -> MemLevel:
         """Get a specific memory level by name."""
         for level in self._memory_hierarchy:
@@ -90,7 +114,7 @@ class AscendSpec(HardwareSpec):
 ASCEND_910B = AscendSpec(
     name="Ascend 910B",
     ai_core_count=30,
-    cube_peak_tflops={"fp16": 320, "bf16": 320, "int8": 640, "fp32": 160},
+    cube_peak_tflops={"fp16": 320, "bf16": 320, "int8": 640, "fp8": 640, "fp32": 160},
     vector_peak_tflops={"fp16": 10, "bf16": 10, "fp32": 5},
     cube_tile_size=16,
     ub_size_kb=192,
@@ -105,13 +129,18 @@ ASCEND_910B = AscendSpec(
     l1_bw_GBs=4096,
     l2_bw_GBs=3200,
     gm_bw_GBs=1600,
+    mte_bw_GBs=53.3,        # 1600 / 30 cores
+    mte_l2_bw_GBs=106.7,    # ~2x GM per-core
+    pipeline_startup_us=2.0,
+    pipeline_drain_us=1.0,
+    interconnect=InterconnectSpec("HCCS", 392, 1.0),
 )
 
 # Ascend 910C
 ASCEND_910C = AscendSpec(
     name="Ascend 910C",
     ai_core_count=32,
-    cube_peak_tflops={"fp16": 400, "bf16": 400, "int8": 800, "fp32": 200},
+    cube_peak_tflops={"fp16": 400, "bf16": 400, "int8": 800, "fp8": 800, "fp32": 200},
     vector_peak_tflops={"fp16": 12.5, "bf16": 12.5, "fp32": 6.25},
     cube_tile_size=16,
     ub_size_kb=256,
@@ -126,4 +155,9 @@ ASCEND_910C = AscendSpec(
     l1_bw_GBs=5120,
     l2_bw_GBs=4000,
     gm_bw_GBs=1800,
+    mte_bw_GBs=56.3,        # 1800 / 32 cores
+    mte_l2_bw_GBs=125.0,    # ~2x GM per-core
+    pipeline_startup_us=1.5,
+    pipeline_drain_us=0.8,
+    interconnect=InterconnectSpec("HCCS", 600, 1.0),
 )

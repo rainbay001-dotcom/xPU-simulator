@@ -152,6 +152,8 @@ def _build_architecture_overview(
             return "q_compress"
         elif any(k in s for k in ["wkv_a", "wkv_b", "kv_norm"]):
             return "kv_compress"
+        elif "indexer" in s or "top_k" in s:
+            return "indexer"
         elif "rope" in s:
             return "rope"
         elif "attn_score" in s or "attn_softmax" in s or "attn_v" in s:
@@ -186,24 +188,152 @@ def _build_architecture_overview(
     moe_layer_id = n_dense if n_dense > 0 else 3
     moe_block = _build_block_breakdown(moe_layer_id) if moe_layer_id in layer_data else []
 
-    # MLA detail: ops from the attention portion of layer 0
+    # MLA/DSA detail: ops from the attention portion of layer 0
     mla_ops = []
+    has_indexer = False
     if 0 in layer_ops:
         for op in layer_ops[0]:
             grp = _classify_sub(op["sub"])
-            if grp in ("q_compress", "kv_compress", "rope", "attention", "output_proj"):
+            if grp in ("q_compress", "kv_compress", "rope", "attention",
+                       "output_proj", "indexer"):
                 mla_ops.append({"sub": op["sub"], "group": grp,
                                 "latency_us": op["latency_us"], "flops": op["flops"]})
+                if grp == "indexer":
+                    has_indexer = True
 
     return {
         "pipeline": pipeline,
         "dense_block": dense_block,
         "moe_block": moe_block,
         "mla_ops": mla_ops,
+        "has_indexer": has_indexer,
         "n_dense": n_dense,
         "n_moe": max(0, max_layer_id + 1 - n_dense) if max_layer_id >= 0 else 0,
         "n_layers": max_layer_id + 1 if max_layer_id >= 0 else 0,
     }
+
+
+def _build_structured_config(config: dict) -> dict:
+    """Organize flat config dict into grouped sections for display.
+
+    Groups:
+      - Simulation Input: batch_size, seq_len, phase, kv_seq_len, dtype
+      - Model Architecture: model_type, hidden_size, num_hidden_layers, vocab_size, hidden_act, etc.
+      - Attention: num_attention_heads, num_key_value_heads, head_dim, MLA params, sliding_window
+      - FFN / MoE: intermediate_size, MoE params (experts, activated, shared)
+      - Quantization: quantization_config fields
+      - Parallelism: tp_size, dp_size, ep_size
+      - Sparse Attention: dsa_*, attention_pattern
+    """
+    groups: dict[str, list[tuple[str, str, str]]] = {}  # group -> [(key, label, value)]
+
+    def add(group: str, key: str, label: str, val):
+        if val is None:
+            return
+        if group not in groups:
+            groups[group] = []
+        groups[group].append((key, label, str(val)))
+
+    c = config
+
+    # --- Simulation Input ---
+    add("Simulation Input", "batch_size", "Batch Size", c.get("batch_size"))
+    add("Simulation Input", "seq_len", "Sequence Length", c.get("seq_len"))
+    add("Simulation Input", "phase", "Phase", c.get("phase", "prefill"))
+    if c.get("kv_seq_len"):
+        add("Simulation Input", "kv_seq_len", "KV Cache Length", c.get("kv_seq_len"))
+    add("Simulation Input", "dtype", "Dtype", c.get("dtype", "fp16"))
+    if c.get("extractor"):
+        add("Simulation Input", "extractor", "Extractor", c.get("extractor"))
+    if c.get("tokens"):
+        add("Simulation Input", "tokens", "Total Tokens", c.get("tokens"))
+
+    # --- Model Architecture ---
+    # Skip model_type — it's a HF architecture class name (e.g. "deepseek_v2"),
+    # not the actual model name which is already shown in the report title.
+    add("Model Architecture", "hidden_size", "Hidden Size (d_model)", c.get("hidden_size"))
+    add("Model Architecture", "num_hidden_layers", "Layers", c.get("num_hidden_layers"))
+    if c.get("first_k_dense_replace"):
+        add("Model Architecture", "first_k_dense_replace", "Dense Layers", c.get("first_k_dense_replace"))
+        moe_layers = (c.get("num_hidden_layers") or 0) - (c.get("first_k_dense_replace") or 0)
+        if moe_layers > 0:
+            add("Model Architecture", "n_moe_layers", "MoE Layers", moe_layers)
+    add("Model Architecture", "vocab_size", "Vocab Size", c.get("vocab_size"))
+    add("Model Architecture", "hidden_act", "Activation", c.get("hidden_act"))
+    add("Model Architecture", "max_position_embeddings", "Max Position Embeddings",
+        c.get("max_position_embeddings"))
+
+    # --- Attention ---
+    add("Attention", "num_attention_heads", "Attention Heads", c.get("num_attention_heads"))
+    add("Attention", "num_key_value_heads", "KV Heads", c.get("num_key_value_heads"))
+    head_dim = c.get("head_dim")
+    if not head_dim and c.get("hidden_size") and c.get("num_attention_heads"):
+        head_dim = c["hidden_size"] // c["num_attention_heads"]
+    add("Attention", "head_dim", "Head Dim", head_dim)
+    # MLA params
+    add("Attention", "q_lora_rank", "Q LoRA Rank", c.get("q_lora_rank"))
+    add("Attention", "kv_lora_rank", "KV LoRA Rank", c.get("kv_lora_rank"))
+    add("Attention", "qk_nope_head_dim", "QK Nope Head Dim", c.get("qk_nope_head_dim"))
+    add("Attention", "qk_rope_head_dim", "QK RoPE Head Dim", c.get("qk_rope_head_dim"))
+    add("Attention", "v_head_dim", "V Head Dim", c.get("v_head_dim"))
+    add("Attention", "rope_theta", "RoPE Theta", c.get("rope_theta"))
+    add("Attention", "sliding_window", "Sliding Window", c.get("sliding_window"))
+
+    # --- FFN / MoE ---
+    add("FFN / MoE", "intermediate_size", "FFN Intermediate Size", c.get("intermediate_size"))
+    add("FFN / MoE", "n_routed_experts", "Routed Experts", c.get("n_routed_experts"))
+    add("FFN / MoE", "num_experts_per_tok", "Activated per Token", c.get("num_experts_per_tok"))
+    add("FFN / MoE", "n_shared_experts", "Shared Experts", c.get("n_shared_experts"))
+    add("FFN / MoE", "moe_intermediate_size", "MoE Expert Intermediate", c.get("moe_intermediate_size"))
+    add("FFN / MoE", "shared_expert_intermediate_size", "Shared Expert Intermediate",
+        c.get("shared_expert_intermediate_size"))
+
+    # --- Sparse Attention (DSA) ---
+    add("Sparse Attention", "dsa_k", "DSA Top-K", c.get("dsa_k"))
+    add("Sparse Attention", "dsa_num_indexer_heads", "DSA Indexer Heads", c.get("dsa_num_indexer_heads"))
+    add("Sparse Attention", "dsa_indexer_dim", "DSA Indexer Dim", c.get("dsa_indexer_dim"))
+    if isinstance(c.get("attention_pattern"), dict):
+        ap = c["attention_pattern"]
+        add("Sparse Attention", "attention_pattern", "Pattern", ap.get("kind", "dense"))
+        if ap.get("window_size"):
+            add("Sparse Attention", "window_size", "Window Size", ap["window_size"])
+        if ap.get("k"):
+            add("Sparse Attention", "top_k", "Top-K", ap["k"])
+
+    # --- Quantization ---
+    qc = c.get("quantization_config")
+    if isinstance(qc, dict):
+        add("Quantization", "quant_method", "Method", qc.get("quant_method"))
+        add("Quantization", "bits", "Bits", qc.get("bits"))
+        add("Quantization", "group_size", "Group Size", qc.get("group_size"))
+        add("Quantization", "desc_act", "Desc Act", qc.get("desc_act"))
+    if c.get("quant_config"):
+        qcf = c["quant_config"]
+        if isinstance(qcf, dict):
+            add("Quantization", "weight_dtype", "Weight Dtype", qcf.get("weight_dtype"))
+            add("Quantization", "activation_dtype", "Activation Dtype", qcf.get("activation_dtype"))
+
+    # --- Parallelism --- always show (defaults to 1)
+    tp = dp = ep = 1
+    pc = c.get("parallel_config")
+    if isinstance(pc, dict):
+        tp = pc.get("tp_size", 1)
+        dp = pc.get("dp_size", 1)
+        ep = pc.get("ep_size", 1)
+    # Top-level shorthand overrides
+    tp = c.get("tp_size", tp)
+    dp = c.get("dp_size", dp)
+    ep = c.get("ep_size", ep)
+    add("Parallelism", "tp_size", "Tensor Parallel (TP)", tp)
+    add("Parallelism", "dp_size", "Data Parallel (DP)", dp)
+    add("Parallelism", "ep_size", "Expert Parallel (EP)", ep)
+
+    # Convert to serializable format: {group_name: [{key, label, value}]}
+    result = {}
+    for group_name, items in groups.items():
+        if items:
+            result[group_name] = [{"key": k, "label": l, "value": v} for k, l, v in items]
+    return result
 
 
 def export_html_report(
@@ -214,6 +344,9 @@ def export_html_report(
     config: dict = None,
     categorize_fn: Callable[[str], str] = None,
     n_dense: int = 0,
+    serving_metrics=None,
+    tp_comparison: dict = None,
+    fusion_info: dict = None,
 ):
     """Export a full interactive HTML report.
 
@@ -225,6 +358,15 @@ def export_html_report(
         config: Optional model config dict
         categorize_fn: Custom categorization function. Defaults to categorize_op.
         n_dense: Number of dense layers (for Dense/MoE divider in chart). 0 to hide.
+        serving_metrics: Optional ServingMetrics object for serving simulation results.
+        tp_comparison: Optional dict with TP comparison data.
+        fusion_info: Optional dict with fusion pass results::
+
+            {
+                "original_nodes": 6513, "fused_nodes": 3425,
+                "rules_applied": {"rms_norm": 245, "flash_attention": 61, ...},
+                "extractor": "DispatchExtractor",
+            }
     """
     _cat = categorize_fn or categorize_op
 
@@ -268,9 +410,60 @@ def export_html_report(
     # Build overall architecture overview data
     arch_overview = _build_architecture_overview(graph, first_result, n_dense, _cat)
 
+    # Build structured config for display
+    structured_config = _build_structured_config(config or {})
+
+    # Extract phase and feature info from results
+    first_phase = first_result.phase
+    phase_info = {}
+    for dev_name, result in results.items():
+        pi = {}
+        if result.phase == "prefill" and result.ttft_ms is not None:
+            pi["ttft_ms"] = round(result.ttft_ms, 3)
+        elif result.phase == "decode" and result.tpot_ms is not None:
+            pi["tpot_ms"] = round(result.tpot_ms, 3)
+        if result.speedup_from_overlap > 1.01:
+            pi["overlap_speedup"] = round(result.speedup_from_overlap, 2)
+        phase_info[dev_name] = pi
+
+    # Quantization and parallelism from config
+    quant_info = None
+    if config:
+        qc = config.get("quantization_config")
+        if qc:
+            quant_info = {
+                "method": qc.get("quant_method", "unknown"),
+                "bits": qc.get("bits", "?"),
+                "group_size": qc.get("group_size"),
+            }
+
+    parallel_info = None
+    if config and config.get("parallel_config"):
+        pc = config["parallel_config"]
+        parallel_info = {"tp": pc.get("tp_size", 1), "dp": pc.get("dp_size", 1),
+                         "ep": pc.get("ep_size", 1)}
+
+    # Serving metrics
+    serving_data = None
+    if serving_metrics is not None:
+        serving_data = {
+            "num_requests": serving_metrics.num_requests,
+            "total_tokens": serving_metrics.total_generated_tokens,
+            "total_time_ms": round(serving_metrics.total_time_us / 1000, 1),
+            "throughput_tok_s": round(serving_metrics.throughput_tok_per_s, 1),
+            "throughput_req_s": round(serving_metrics.throughput_req_per_s, 2),
+            "avg_ttft_ms": round(serving_metrics.avg_ttft_ms, 2),
+            "p50_ttft_ms": round(serving_metrics.p50_ttft_ms, 2),
+            "p99_ttft_ms": round(serving_metrics.p99_ttft_ms, 2),
+            "avg_tpot_ms": round(serving_metrics.avg_tpot_ms, 3),
+            "p50_tpot_ms": round(serving_metrics.p50_tpot_ms, 3),
+            "p99_tpot_ms": round(serving_metrics.p99_tpot_ms, 3),
+        }
+
     report_data = {
         "model_name": model_name,
         "config": config or {},
+        "structured_config": structured_config,
         "devices": device_data,
         "colors": CATEGORY_COLORS,
         "n_dense": n_dense,
@@ -278,6 +471,13 @@ def export_html_report(
         "num_nodes": graph.num_nodes,
         "num_edges": graph.num_edges,
         "arch_overview": arch_overview,
+        "phase": first_phase,
+        "phase_info": phase_info,
+        "quant_info": quant_info,
+        "parallel_info": parallel_info,
+        "serving": serving_data,
+        "tp_comparison": tp_comparison,
+        "fusion_info": fusion_info,
     }
 
     html = _HTML_TEMPLATE.replace("__REPORT_DATA__", json.dumps(report_data))
@@ -338,6 +538,13 @@ canvas { width: 100% !important; }
 .config-item { font-size: 13px; }
 .config-key { color: #8b949e; }
 .config-val { color: #f0f6fc; font-weight: 600; }
+.config-sections { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin: 16px 0; }
+.config-section { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 16px; }
+.config-section-title { color: #58a6ff; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid #21262d; display: flex; align-items: center; gap: 6px; }
+.config-section-title .icon { font-size: 15px; }
+.config-row { display: flex; justify-content: space-between; align-items: baseline; padding: 3px 0; font-size: 13px; }
+.config-row .cl { color: #8b949e; }
+.config-row .cv { color: #f0f6fc; font-weight: 600; font-variant-numeric: tabular-nums; }
 .node { cursor: pointer; transition: opacity 0.2s; }
 .node:hover { opacity: 0.8; }
 .tooltip { position: absolute; background: #1c2128; border: 1px solid #30363d; border-radius: 6px; padding: 10px; font-size: 12px; pointer-events: none; z-index: 100; display: none; max-width: 300px; }
@@ -380,10 +587,52 @@ const firstData = DATA.devices[firstDev];
 
 // Header
 let html = `<h1>xPU-Simulator Report</h1>`;
-html += `<div class="subtitle">${DATA.model_name} &mdash; ${DATA.num_nodes} ops, ${DATA.num_edges} edges</div>`;
+const phaseBadge = DATA.phase ? ` <span style="background:#1f6feb;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;vertical-align:middle">${DATA.phase}</span>` : '';
+html += `<div class="subtitle">${DATA.model_name}${phaseBadge} &mdash; ${DATA.num_nodes} ops, ${DATA.num_edges} edges</div>`;
 
-// Config
-if (Object.keys(DATA.config).length > 0) {
+// Config — structured grouped display
+const SC = DATA.structured_config || {};
+const sectionIcons = {
+    'Simulation Input': '&#9654;',
+    'Model Architecture': '&#9881;',
+    'Attention': '&#128065;',
+    'FFN / MoE': '&#9881;',
+    'Sparse Attention': '&#9889;',
+    'Quantization': '&#128290;',
+    'Parallelism': '&#8644;',
+};
+const sectionOrder = ['Simulation Input','Model Architecture','Attention','FFN / MoE','Sparse Attention','Quantization','Parallelism'];
+
+if (Object.keys(SC).length > 0) {
+    html += `<h2>Configuration</h2><div class="config-sections">`;
+    for (const group of sectionOrder) {
+        const items = SC[group];
+        if (!items || items.length === 0) continue;
+        const icon = sectionIcons[group] || '';
+        html += `<div class="config-section"><div class="config-section-title"><span class="icon">${icon}</span>${group}</div>`;
+        for (const item of items) {
+            let displayVal = item.value;
+            // Format large numbers
+            const num = Number(displayVal);
+            if (!isNaN(num) && num >= 1000 && String(num) === displayVal) {
+                displayVal = num.toLocaleString();
+            }
+            html += `<div class="config-row"><span class="cl">${item.label}</span><span class="cv">${displayVal}</span></div>`;
+        }
+        html += `</div>`;
+    }
+    // Fallback: any groups not in sectionOrder
+    for (const [group, items] of Object.entries(SC)) {
+        if (sectionOrder.includes(group) || !items || items.length === 0) continue;
+        html += `<div class="config-section"><div class="config-section-title">${group}</div>`;
+        for (const item of items) {
+            html += `<div class="config-row"><span class="cl">${item.label}</span><span class="cv">${item.value}</span></div>`;
+        }
+        html += `</div>`;
+    }
+    html += `</div>`;
+} else if (Object.keys(DATA.config).length > 0) {
+    // Fallback: flat grid for unstructured config
     html += `<h2>Model Config</h2><div class="config-grid">`;
     for (const [k,v] of Object.entries(DATA.config)) {
         html += `<div class="config-item"><span class="config-key">${k}:</span> <span class="config-val">${v}</span></div>`;
@@ -391,10 +640,65 @@ if (Object.keys(DATA.config).length > 0) {
     html += `</div>`;
 }
 
+// Feature badges (quant, parallel)
+if (DATA.quant_info || DATA.parallel_info) {
+    html += `<div style="display:flex;gap:8px;margin:12px 0;flex-wrap:wrap">`;
+    if (DATA.quant_info) {
+        html += `<span style="background:#7c3aed;color:#fff;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600">${DATA.quant_info.method.toUpperCase()} W${DATA.quant_info.bits}${DATA.quant_info.group_size ? ' g'+DATA.quant_info.group_size : ''}</span>`;
+    }
+    if (DATA.parallel_info) {
+        const p = DATA.parallel_info;
+        const parts = [];
+        if (p.tp > 1) parts.push('TP=' + p.tp);
+        if (p.dp > 1) parts.push('DP=' + p.dp);
+        if (p.ep > 1) parts.push('EP=' + p.ep);
+        if (parts.length > 0) {
+            html += `<span style="background:#0d6efd;color:#fff;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600">${parts.join(', ')}</span>`;
+        }
+    }
+    html += `</div>`;
+}
+
+// Fusion info section
+if (DATA.fusion_info) {
+    const fi = DATA.fusion_info;
+    const pctElim = ((fi.original_nodes - fi.fused_nodes) / fi.original_nodes * 100).toFixed(0);
+    html += `<h2>Kernel Fusion</h2>`;
+    html += `<div class="cards">`;
+    html += `<div class="card"><div class="card-label">Graph Nodes</div><div class="card-value">${fmt(fi.original_nodes)} &rarr; ${fmt(fi.fused_nodes)}</div><div class="card-detail">${fmt(fi.original_nodes - fi.fused_nodes)} eliminated (${pctElim}%)</div></div>`;
+    if (fi.extractor) {
+        html += `<div class="card"><div class="card-label">Extractor</div><div class="card-value">${fi.extractor}</div><div class="card-detail">Graph extraction method</div></div>`;
+    }
+    html += `</div>`;
+    if (fi.rules_applied && Object.keys(fi.rules_applied).length > 0) {
+        const rules = fi.rules_applied;
+        const total = Object.values(rules).reduce((s,v)=>s+v,0);
+        const maxCount = Math.max(...Object.values(rules));
+        html += `<div class="chart-container">`;
+        html += `<h3 style="margin:0 0 12px;color:#c9d1d9">Fusion Rules Applied <span style="font-weight:normal;font-size:0.85em;color:#8b949e">(${total} total)</span></h3>`;
+        const ruleColors = {'rms_norm':'#3fb950','flash_attention':'#f0883e','grouped_matmul_swiglu':'#a371f7','rope':'#58a6ff','add_rms_norm':'#56d364','matmul_epilogue':'#79c0ff','elementwise_chain':'#d2a8ff','swiglu':'#ffa657','npu_format':'#e3b341'};
+        const sorted = Object.entries(rules).sort((a,b)=>b[1]-a[1]);
+        for (const [rule, count] of sorted) {
+            const pct = (count / maxCount * 100).toFixed(0);
+            const color = ruleColors[rule] || '#8b949e';
+            const label = rule.replace(/_/g, ' ');
+            html += `<div style="display:flex;align-items:center;gap:10px;margin:6px 0">`;
+            html += `<span style="width:200px;text-align:right;font-size:13px;color:#8b949e">${label}</span>`;
+            html += `<div class="bar-bg" style="flex:1;max-width:500px"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div>`;
+            html += `<span style="width:50px;font-size:13px;font-weight:600;color:${color}">${count}</span>`;
+            html += `</div>`;
+        }
+        html += `</div>`;
+    }
+}
+
 // Comparison cards
+const hasPhaseMetrics = Object.values(DATA.phase_info || {}).some(p => p.ttft_ms || p.tpot_ms);
 html += `<h2>Device Comparison</h2>`;
 html += `<table class="comparison-table"><thead><tr>
-    <th>Device</th><th>Latency</th><th>vs ${devices[0]}</th><th>Ops</th><th>Compute-bound</th><th>Memory-bound</th><th>Total FLOPs</th><th>Total Memory</th>
+    <th>Device</th><th>Latency</th><th>vs ${devices[0]}</th>`;
+if (hasPhaseMetrics) html += `<th>${DATA.phase === 'prefill' ? 'TTFT' : 'TPOT'}</th>`;
+html += `<th>Ops</th><th>Compute-bound</th><th>Memory-bound</th><th>Total FLOPs</th><th>Total Memory</th>
 </tr></thead><tbody>`;
 
 const baseLat = DATA.devices[devices[0]].total_latency_us;
@@ -402,11 +706,16 @@ for (const dev of devices) {
     const d = DATA.devices[dev];
     const speedup = baseLat / d.total_latency_us;
     const cls = speedup >= 1 ? 'speedup' : 'slowdown';
+    const pi = (DATA.phase_info || {})[dev] || {};
     html += `<tr>
         <td><strong>${dev}</strong></td>
         <td>${fmtLat(d.total_latency_us)}</td>
-        <td class="${cls}">${speedup.toFixed(2)}x</td>
-        <td>${d.num_ops}</td>
+        <td class="${cls}">${speedup.toFixed(2)}x</td>`;
+    if (hasPhaseMetrics) {
+        const metric = pi.ttft_ms != null ? pi.ttft_ms.toFixed(2) + ' ms' : (pi.tpot_ms != null ? pi.tpot_ms.toFixed(3) + ' ms' : '—');
+        html += `<td>${metric}</td>`;
+    }
+    html += `<td>${d.num_ops}</td>
         <td>${d.compute_bound}</td>
         <td>${d.memory_bound}</td>
         <td>${fmtFlops(d.total_flops)}</td>
@@ -414,6 +723,58 @@ for (const dev of devices) {
     </tr>`;
 }
 html += `</tbody></table>`;
+
+// Serving metrics section
+if (DATA.serving) {
+    const s = DATA.serving;
+    html += `<h2>Serving Simulation</h2>`;
+    html += `<div class="cards">`;
+    html += `<div class="card"><div class="card-label">Throughput</div><div class="card-value">${s.throughput_tok_s}</div><div class="card-detail">tokens/sec (${s.throughput_req_s} req/s)</div></div>`;
+    html += `<div class="card"><div class="card-label">Requests</div><div class="card-value">${s.num_requests}</div><div class="card-detail">${s.total_tokens} tokens generated in ${s.total_time_ms} ms</div></div>`;
+    html += `<div class="card"><div class="card-label">TTFT</div><div class="card-value">${s.avg_ttft_ms} ms</div><div class="card-detail">p50=${s.p50_ttft_ms} ms, p99=${s.p99_ttft_ms} ms</div></div>`;
+    html += `<div class="card"><div class="card-label">TPOT</div><div class="card-value">${s.avg_tpot_ms} ms</div><div class="card-detail">p50=${s.p50_tpot_ms} ms, p99=${s.p99_tpot_ms} ms</div></div>`;
+    html += `</div>`;
+}
+
+// TP Comparison section
+if (DATA.tp_comparison) {
+    const tc = DATA.tp_comparison;
+    html += `<h2>Tensor Parallelism — Single Device vs TP=${tc.tp_size}</h2>`;
+
+    // Summary cards
+    html += `<div class="cards">`;
+    html += `<div class="card"><div class="card-label">TP Size</div><div class="card-value">${tc.tp_size} GPUs</div><div class="card-detail">Weights & heads sharded across devices</div></div>`;
+    html += `<div class="card"><div class="card-label">Graph Ops</div><div class="card-value">${tc.single_ops} → ${tc.tp_ops}</div><div class="card-detail">+${tc.comm_ops} communication ops (ALL_REDUCE, ALL_GATHER)</div></div>`;
+    html += `</div>`;
+
+    // Per-device comparison table
+    html += `<table class="comparison-table"><thead><tr>
+        <th>Device</th><th>Single Device</th><th>TP=${tc.tp_size}</th><th>Speedup</th>
+        <th>Comm Latency</th><th>Comm %</th><th>Efficiency</th>
+    </tr></thead><tbody>`;
+
+    for (const d of tc.devices) {
+        const speedup = d.single_us / d.tp_us;
+        const commPct = d.tp_us > 0 ? (d.comm_us / d.tp_us * 100) : 0;
+        const efficiency = speedup / tc.tp_size * 100;
+        const spdCls = speedup >= 1 ? 'speedup' : 'slowdown';
+        const effColor = efficiency >= 80 ? '#3fb950' : efficiency >= 60 ? '#e3b341' : '#f85149';
+
+        html += `<tr>
+            <td><strong>${d.name}</strong></td>
+            <td>${fmtLat(d.single_us)}</td>
+            <td>${fmtLat(d.tp_us)}</td>
+            <td class="${spdCls}">${speedup.toFixed(2)}x</td>
+            <td>${fmtLat(d.comm_us)}</td>
+            <td>${commPct.toFixed(1)}%</td>
+            <td><span style="color:${effColor};font-weight:600">${efficiency.toFixed(0)}%</span></td>
+        </tr>`;
+    }
+    html += `</tbody></table>`;
+
+    // Stacked bar visualization
+    html += `<div class="chart-container"><svg id="tp-chart" class="graph-svg" style="min-height:200px"></svg></div>`;
+}
 
 // Overall Architecture Overview
 if (DATA.arch_overview && DATA.arch_overview.pipeline) {
@@ -436,9 +797,16 @@ if (DATA.arch_overview && DATA.arch_overview.pipeline) {
         html += `</div>`;
     }
 
-    // MLA detail
+    // MLA detail (with optional DSA indexer)
     if (DATA.arch_overview.mla_ops && DATA.arch_overview.mla_ops.length > 0) {
-        html += `<h3>Multi-Head Latent Attention (MLA) Detail <span style="font-weight:normal;font-size:0.85em;color:#8b949e">— expanding the Attention component above</span></h3>`;
+        const hasDSA = DATA.arch_overview.has_indexer;
+        const mlaTitle = hasDSA
+            ? 'MLA + DeepSeek Sparse Attention (DSA) Detail'
+            : 'Multi-Head Latent Attention (MLA) Detail';
+        const mlaSub = hasDSA
+            ? '— expanding Attention above: lightning indexer selects top-k tokens, then sparse MLA on selected tokens'
+            : '— expanding the Attention component above';
+        html += `<h3>${mlaTitle} <span style="font-weight:normal;font-size:0.85em;color:#8b949e">${mlaSub}</span></h3>`;
         html += `<div class="chart-container"><svg id="arch-mla" class="graph-svg" style="min-height:280px"></svg></div>`;
     }
 }
@@ -636,7 +1004,7 @@ drawPipeline();
 const subColors = {
     attn_norm:'#8b949e', ffn_norm:'#8b949e',
     q_compress:'#58a6ff', kv_compress:'#79c0ff', rope:'#a371f7',
-    attention:'#f0883e', output_proj:'#d2a8ff',
+    indexer:'#e3b341', attention:'#f0883e', output_proj:'#d2a8ff',
     ffn:'#3fb950',
     gate:'#f85149', routed_experts:'#f0883e', shared_expert:'#da7756', combine:'#8957e5',
     other:'#6e7681'
@@ -644,7 +1012,8 @@ const subColors = {
 const subLabels = {
     attn_norm:'RMSNorm (pre-attn)', ffn_norm:'RMSNorm (pre-FFN)',
     q_compress:'Q Compression (W_DQ → norm → W_UQ)', kv_compress:'KV Compression (W_DKV → norm → W_UKV)',
-    rope:'RoPE', attention:'Q@K^T → Softmax → @V', output_proj:'Output Proj (W_O)',
+    rope:'RoPE', indexer:'Lightning Indexer → Top-K',
+    attention:'Q@K^T → Softmax → @V', output_proj:'Output Proj (W_O)',
     ffn:'SwiGLU FFN (W₁→SiLU, W₃→Mul→W₂)',
     gate:'Gate Router → Softmax', routed_experts:'Routed Experts ×8 (SwiGLU)',
     shared_expert:'Shared Expert (SwiGLU)', combine:'Add (routed + shared)',
@@ -719,10 +1088,12 @@ function drawBlockDetail(svgId, components, title) {
 if(ARCH.dense_block) drawBlockDetail('arch-dense', ARCH.dense_block, 'Dense Block');
 if(ARCH.moe_block) drawBlockDetail('arch-moe', ARCH.moe_block, 'MoE Block');
 
-// --- MLA Detail ---
+// --- MLA Detail (with optional DSA indexer) ---
 function drawMLA() {
     const svg = document.getElementById('arch-mla');
     if (!svg || !ARCH.mla_ops || ARCH.mla_ops.length === 0) return;
+
+    const hasDSA = ARCH.has_indexer;
 
     // Group ops by their functional group
     const groups = {};
@@ -733,13 +1104,16 @@ function drawMLA() {
         groups[op.group].flops += op.flops;
     });
 
-    // Layout: two parallel paths (Q and KV) converging at attention
-    const pad=30, boxW=200, boxH=50, hGap=60, vGap=20;
-    const colQ = pad; const colKV = pad + boxW + hGap;
-    const mergeX = pad + (boxW*2+hGap)/2 - boxW/2;
-    const svgW = pad*2 + boxW*2 + hGap + 40;
+    const pad=30, boxW=200, boxH=50, hGap=40, vGap=20;
 
-    // Vertical positions
+    // Layout: 2 columns (Q, KV) or 3 columns (Q, KV, Indexer) if DSA
+    const nCols = hasDSA ? 3 : 2;
+    const colQ = pad;
+    const colKV = pad + boxW + hGap;
+    const colIdx = hasDSA ? pad + 2*(boxW + hGap) : 0;
+    const svgW = pad*2 + nCols*boxW + (nCols-1)*hGap + 40;
+    const mergeX = pad + ((nCols*boxW + (nCols-1)*hGap)/2 - boxW/2);
+
     let row = 0;
     function yAt(r){ return pad + r*(boxH+vGap); }
 
@@ -752,37 +1126,52 @@ function drawMLA() {
     }
 
     // Row 0: Input
-    drawBox(mergeX, yAt(0), boxW, 'Input (h)', 'shape: [tokens, 7168]', '#6e7681', 0);
+    drawBox(mergeX, yAt(0), boxW, 'Input (h)', 'shape: [tokens, dim]', '#6e7681', 0);
     row = 1;
 
-    // Row 1: Q compress and KV compress (parallel)
+    // Row 1: Q compress, KV compress [, Indexer projections]
     const qLat = groups.q_compress ? groups.q_compress.latency : 0;
     const kvLat = groups.kv_compress ? groups.kv_compress.latency : 0;
     drawBox(colQ, yAt(row), boxW, 'Q Compression', 'W_DQ → RMSNorm → W_UQ', '#58a6ff', qLat);
     drawBox(colKV, yAt(row), boxW, 'KV Compression', 'W_DKV → RMSNorm → W_UKV', '#79c0ff', kvLat);
-    // Arrows from input to both
     c += svgArrow(mergeX+boxW/2-20, yAt(0)+boxH+2, colQ+boxW/2, yAt(row)-4);
-    c += svgArrow(mergeX+boxW/2+20, yAt(0)+boxH+2, colKV+boxW/2, yAt(row)-4);
+    c += svgArrow(mergeX+boxW/2, yAt(0)+boxH+2, colKV+boxW/2, yAt(row)-4);
+
+    if (hasDSA) {
+        const idxLat = groups.indexer ? groups.indexer.latency : 0;
+        drawBox(colIdx, yAt(row), boxW, 'Lightning Indexer', 'Q_I, K_I proj → Score → ReLU', '#e3b341', idxLat);
+        c += svgArrow(mergeX+boxW/2+20, yAt(0)+boxH+2, colIdx+boxW/2, yAt(row)-4);
+    }
     row = 2;
 
-    // Row 2: RoPE (parallel on both)
+    // Row 2: RoPE (Q, K) [, Top-K selection]
     const ropeLat = groups.rope ? groups.rope.latency : 0;
     drawBox(colQ, yAt(row), boxW, 'RoPE (Q)', 'Rotary on rope dims', '#a371f7', ropeLat/2);
     drawBox(colKV, yAt(row), boxW, 'RoPE (K)', 'Rotary on rope dims', '#a371f7', ropeLat/2);
     c += svgArrow(colQ+boxW/2, yAt(row-1)+boxH+2, colQ+boxW/2, yAt(row)-4);
     c += svgArrow(colKV+boxW/2, yAt(row-1)+boxH+2, colKV+boxW/2, yAt(row)-4);
+
+    if (hasDSA) {
+        drawBox(colIdx, yAt(row), boxW, 'Top-K Selection', 'Select k tokens per query', '#e3b341', 0);
+        c += svgArrow(colIdx+boxW/2, yAt(row-1)+boxH+2, colIdx+boxW/2, yAt(row)-4);
+    }
     row = 3;
 
-    // Row 3: Attention (Q@K^T -> softmax -> @V) — merged
+    // Row 3: Attention — merged
     const attnLat = groups.attention ? groups.attention.latency : 0;
-    drawBox(mergeX, yAt(row), boxW, 'Attention', 'Q@K^T → Softmax → Scores@V', '#f0883e', attnLat);
+    const attnLabel = hasDSA ? 'Sparse Attention' : 'Attention';
+    const attnSub = hasDSA ? 'Q@K_sel^T → Softmax → @V_sel (S×k)' : 'Q@K^T → Softmax → Scores@V';
+    drawBox(mergeX, yAt(row), boxW, attnLabel, attnSub, '#f0883e', attnLat);
     c += svgArrow(colQ+boxW/2, yAt(row-1)+boxH+2, mergeX+boxW/2-20, yAt(row)-4);
-    c += svgArrow(colKV+boxW/2, yAt(row-1)+boxH+2, mergeX+boxW/2+20, yAt(row)-4);
+    c += svgArrow(colKV+boxW/2, yAt(row-1)+boxH+2, mergeX+boxW/2, yAt(row)-4);
+    if (hasDSA) {
+        c += svgArrow(colIdx+boxW/2, yAt(row-1)+boxH+2, mergeX+boxW/2+20, yAt(row)-4);
+    }
     row = 4;
 
     // Row 4: Output projection
     const outLat = groups.output_proj ? groups.output_proj.latency : 0;
-    drawBox(mergeX, yAt(row), boxW, 'Output Projection', 'W_O → [tokens, 7168]', '#d2a8ff', outLat);
+    drawBox(mergeX, yAt(row), boxW, 'Output Projection', 'W_O → [tokens, dim]', '#d2a8ff', outLat);
     c += svgArrow(mergeX+boxW/2, yAt(row-1)+boxH+2, mergeX+boxW/2, yAt(row)-4);
 
     const svgH = yAt(row) + boxH + pad;
@@ -818,6 +1207,77 @@ function drawTopOps(devName) {
 
 makeDeviceSelector('topops-device-sel', drawTopOps);
 drawTopOps(devices[0]);
+
+// --- TP Comparison Chart ---
+function drawTPChart() {
+    const svg = document.getElementById('tp-chart');
+    if (!svg || !DATA.tp_comparison) return;
+    const tc = DATA.tp_comparison;
+    const devs = tc.devices;
+    if (!devs || devs.length === 0) return;
+
+    const pad = {top: 30, right: 60, bottom: 40, left: 160};
+    const rowH = 64, gap = 16;
+    const svgW = 900;
+    const svgH = pad.top + devs.length * 2 * (rowH + gap) + pad.bottom;
+    svg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+    svg.style.minHeight = svgH + 'px';
+
+    const maxLat = Math.max(...devs.map(d => Math.max(d.single_us, d.tp_us)));
+    const barW = svgW - pad.left - pad.right;
+    let c = '';
+    let y = pad.top;
+
+    for (const d of devs) {
+        const speedup = d.single_us / d.tp_us;
+        const commPct = d.tp_us > 0 ? d.comm_us / d.tp_us : 0;
+        const computeUs = d.tp_us - d.comm_us;
+
+        const barH = 28;
+        const barGap = 4;
+
+        // Device label
+        c += `<text x="${pad.left - 10}" y="${y + barH + barGap/2 + 2}" text-anchor="end" fill="#c9d1d9" font-size="13" font-weight="bold">${d.name}</text>`;
+
+        // Single device bar
+        const sW = d.single_us / maxLat * barW;
+        c += `<rect x="${pad.left}" y="${y}" width="${sW}" height="${barH}" rx="5" fill="#8b949e" opacity="0.6"/>`;
+        c += `<text x="${pad.left + 8}" y="${y + 12}" fill="#fff" font-size="11" font-weight="600">Single: ${fmtLat(d.single_us)}</text>`;
+
+        // TP bar (two segments: compute + comm)
+        const tpY = y + barH + barGap;
+        const tpTotalW = d.tp_us / maxLat * barW;
+        const compW = computeUs / maxLat * barW;
+        const commW = tpTotalW - compW;
+
+        // Compute segment
+        c += `<rect x="${pad.left}" y="${tpY}" width="${compW}" height="${barH}" rx="5" fill="#3fb950"/>`;
+        // Comm segment
+        if (commW > 0) {
+            c += `<rect x="${pad.left + compW}" y="${tpY}" width="${commW}" height="${barH}" rx="0" fill="#f0883e"/>`;
+            // Round right edge only
+            c += `<rect x="${pad.left + compW + commW - 5}" y="${tpY}" width="5" height="${barH}" rx="5" fill="#f0883e"/>`;
+        }
+        // TP label line 1: latency + comm
+        c += `<text x="${pad.left + 8}" y="${tpY + 12}" fill="#fff" font-size="11" font-weight="600">TP=${tc.tp_size}: ${fmtLat(d.tp_us)}  <tspan fill="#fff" opacity="0.7">(comm ${fmtLat(d.comm_us)}, ${(commPct*100).toFixed(1)}%)</tspan></text>`;
+        // Speedup label — white bold, at end of TP bar
+        c += `<text x="${pad.left + 8}" y="${tpY + 24}" fill="#fff" font-size="12" font-weight="bold">${speedup.toFixed(2)}x speedup</text>`;
+
+        y += 2 * (rowH + gap) - gap/2;
+    }
+
+    // Legend
+    const legY = svgH - 20;
+    c += `<rect x="${pad.left}" y="${legY}" width="14" height="14" rx="3" fill="#8b949e" opacity="0.6"/>`;
+    c += `<text x="${pad.left + 20}" y="${legY + 11}" fill="#8b949e" font-size="12">Single device</text>`;
+    c += `<rect x="${pad.left + 140}" y="${legY}" width="14" height="14" rx="3" fill="#3fb950"/>`;
+    c += `<text x="${pad.left + 160}" y="${legY + 11}" fill="#8b949e" font-size="12">Compute (TP)</text>`;
+    c += `<rect x="${pad.left + 290}" y="${legY}" width="14" height="14" rx="3" fill="#f0883e"/>`;
+    c += `<text x="${pad.left + 310}" y="${legY + 11}" fill="#8b949e" font-size="12">Communication overhead</text>`;
+
+    svg.innerHTML = c;
+}
+drawTPChart();
 </script>
 </body>
 </html>"""

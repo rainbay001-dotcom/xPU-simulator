@@ -1,7 +1,12 @@
-"""Ascend NPU cost model with CUBE/VECTOR pipeline awareness."""
+"""Ascend NPU cost model with CA-style tiled pipeline simulation.
+
+Models the DaVinci AI core's 3-stage pipeline (MTE → CUBE → VECTOR)
+with double-buffering, tile-level cost breakdown, and L2 reuse.
+"""
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 from ...core.cost_model import CostModel, OpCost
 from ...core.operator import OpSpec, OpType
@@ -16,6 +21,7 @@ _VECTOR_OPS = {
     OpType.RELU, OpType.ADD, OpType.GELU, OpType.SILU, OpType.MUL,
     OpType.LAYER_NORM, OpType.SOFTMAX, OpType.ROPE, OpType.EMBEDDING,
     OpType.GATHER, OpType.ALL_REDUCE, OpType.ALL_TO_ALL,
+    OpType.ALL_GATHER, OpType.REDUCE_SCATTER, OpType.DEQUANT,
 }
 
 # Data layout preferences per op type
@@ -32,13 +38,37 @@ _LAYOUT_MAP = {
     OpType.GATHER: "ND",
     OpType.ALL_REDUCE: "ND",
     OpType.ALL_TO_ALL: "ND",
+    OpType.ALL_GATHER: "ND",
+    OpType.REDUCE_SCATTER: "ND",
+    OpType.DEQUANT: "ND",
     OpType.LAYER_NORM: "ND",
     OpType.SOFTMAX: "ND",
 }
 
 
+@dataclass
+class _TilingConfig:
+    """Tile dimensions and counts for a tiled MatMul."""
+    Tm: int
+    Tn: int
+    Tk: int
+    num_m_tiles: int
+    num_n_tiles: int
+    num_k_tiles: int
+    tiles_per_core: int
+
+
 class NPUCostModel(CostModel):
-    """Cost model for Ascend NPU with CUBE/VECTOR pipeline modeling."""
+    """Cost model for Ascend NPU with CA-style tiled pipeline simulation.
+
+    Models the DaVinci architecture's pipeline stages:
+    - MTE (Memory Transfer Engine): data movement GM/L2 → UB
+    - CUBE: matrix multiplication on systolic array
+    - VECTOR: elementwise/reduction operations
+    - MTE-out: write results back
+
+    Stages overlap via double-buffering for pipelined execution.
+    """
 
     hw: AscendSpec
 
@@ -52,45 +82,108 @@ class NPUCostModel(CostModel):
         elif op.op_type in _VECTOR_OPS:
             return self._estimate_vector(op)
         else:
-            return self._estimate_fallback(op)
+            return self._estimate_vector(op)  # fallback
+
+    # ------------------------------------------------------------------ #
+    # CUBE pipeline (MatMul / Conv2D)
+    # ------------------------------------------------------------------ #
 
     def _estimate_cube(self, op: OpSpec) -> OpCost:
-        """Estimate cost for CUBE (matrix) operations.
+        """Estimate cost for CUBE ops using tiled pipeline model.
 
-        CUBE operates on tiles of size (tile x tile). Misaligned shapes
-        cause padding waste and reduced utilization.
+        Pipeline per K-tile: MTE_in → CUBE → (VECTOR) → MTE_out
+        With double-buffering, stages overlap: per_tile = max(stages).
         """
-        dtype = op.inputs[0].dtype.value if op.inputs else "fp16"
+        dtype_str = op.inputs[0].dtype.value if op.inputs else "fp16"
+        dtype_bytes = op.inputs[0].dtype.bytes if op.inputs else 2
         flops = op.flops
         mem_bytes = op.memory_bytes
         tile = self.hw.cube_tile_size
 
-        # Compute CUBE utilization based on tile alignment
+        # Tile alignment utilization
         utilization = self._cube_utilization(op, tile)
 
-        # Effective peak = peak * utilization
-        cube_peak = self.hw.cube_peak_for(dtype)
-        effective_peak = cube_peak * utilization
+        # Compute tiling
+        tiling = self._compute_matmul_tiling(op, dtype_bytes)
 
-        # Memory-hierarchy-aware bandwidth for data movement
-        bw = self.hw.effective_bandwidth(mem_bytes) * 1e9  # B/s
+        # Per-core peaks
+        cube_peak = self.hw.per_core_cube_peak(dtype_str)  # FLOPS
+        mte_bw = self.hw.mte_bw_GBs * 1e9  # B/s
+        mte_l2_bw = self.hw.mte_l2_bw_GBs * 1e9  # B/s
 
-        compute_us = (flops / effective_peak * 1e6) if effective_peak > 0 else 0.0
-        memory_us = (mem_bytes / bw * 1e6) if bw > 0 else 0.0
+        Tm, Tn, Tk = tiling.Tm, tiling.Tn, tiling.Tk
 
-        # Format conversion overhead (ND -> NZ or NC1HWC0)
-        # Skip if fusion pass already handled format conversion
+        # Per K-tile costs
+        bytes_in = (Tm * Tk + Tk * Tn) * dtype_bytes
+        mte_in_us = (bytes_in / mte_bw * 1e6) if mte_bw > 0 else 0.0
+
+        cube_flops = 2 * Tm * Tk * Tn
+        effective_cube_peak = cube_peak * utilization
+        cube_us = (cube_flops / effective_cube_peak * 1e6) if effective_cube_peak > 0 else 0.0
+
+        # MTE_out: write output tile (only after last K-tile, but pipelined)
+        bytes_out = Tm * Tn * dtype_bytes
+        mte_out_us = (bytes_out / mte_bw * 1e6) if mte_bw > 0 else 0.0
+
+        # L2 reuse: if all B-tiles for one N-column fit in L2,
+        # subsequent M-tile iterations fetch B from L2 instead of GM
+        b_tiles_bytes = tiling.num_k_tiles * Tk * Tn * dtype_bytes
+        l2_size = self.hw.get_mem_level("L2").size_bytes
+        b_fits_l2 = b_tiles_bytes <= l2_size
+
+        if b_fits_l2 and tiling.num_m_tiles > 1:
+            # First M-tile: both A and B from GM
+            mte_in_first_us = mte_in_us
+            # Subsequent M-tiles: A from GM, B from L2
+            a_bytes = Tm * Tk * dtype_bytes
+            b_bytes = Tk * Tn * dtype_bytes
+            mte_in_reuse_us = max(
+                a_bytes / mte_bw * 1e6,
+                b_bytes / mte_l2_bw * 1e6,
+            ) if mte_bw > 0 else 0.0
+        else:
+            mte_in_first_us = mte_in_us
+            mte_in_reuse_us = mte_in_us
+
+        # Pipeline overlap with double-buffering
+        # Per K-tile: max(mte_in, cube) — MTE loads next tile while CUBE processes current
+        per_ktile_first = max(mte_in_first_us, cube_us)
+        per_ktile_reuse = max(mte_in_reuse_us, cube_us)
+
+        # Per output tile: iterate over K-tiles + one MTE_out at the end
+        per_output_tile_first = tiling.num_k_tiles * per_ktile_first + mte_out_us
+        per_output_tile_reuse = tiling.num_k_tiles * per_ktile_reuse + mte_out_us
+
+        # Total across output tiles assigned to one core
+        # First N-column of M-tiles: first row fetches B from GM, rest reuse L2
+        if b_fits_l2 and tiling.num_m_tiles > 1:
+            # Per N-column: 1 first + (num_m - 1) reuse
+            per_n_column = per_output_tile_first + (tiling.num_m_tiles - 1) * per_output_tile_reuse
+            num_n_per_core = math.ceil(tiling.num_n_tiles / self.hw.ai_core_count)
+            per_core_us = num_n_per_core * per_n_column
+        else:
+            per_core_us = tiling.tiles_per_core * per_output_tile_first
+
+        # Pipeline startup + drain
+        total_compute_us = per_core_us + self.hw.pipeline_startup_us + self.hw.pipeline_drain_us
+
+        # Format conversion overhead
         if op.attrs.get("skip_format_conversion"):
             format_overhead_us = 0.0
         else:
-            format_overhead_us = self._format_conversion_cost(op, dtype)
+            format_overhead_us = self._format_conversion_cost(op, dtype_str)
 
-        latency_us = max(compute_us, memory_us) + format_overhead_us
-        bound = "compute (PIPE_M)" if compute_us >= memory_us else "memory"
+        latency_us = total_compute_us + format_overhead_us
+
+        # For OpCost, report the dominant component
+        # compute_us = CUBE pipeline time, memory_us = MTE component
+        total_mte_us = tiling.tiles_per_core * tiling.num_k_tiles * mte_in_first_us + tiling.tiles_per_core * mte_out_us
+        total_cube_us = tiling.tiles_per_core * tiling.num_k_tiles * cube_us
+        bound = "compute (PIPE_M)" if total_cube_us >= total_mte_us else "memory"
 
         return OpCost(
-            compute_us=compute_us + format_overhead_us,
-            memory_us=memory_us,
+            compute_us=total_cube_us + format_overhead_us,
+            memory_us=total_mte_us,
             latency_us=latency_us,
             bound=bound,
             flops=flops,
@@ -98,45 +191,197 @@ class NPUCostModel(CostModel):
             utilization=utilization,
         )
 
-    def _estimate_vector(self, op: OpSpec) -> OpCost:
-        """Estimate cost for VECTOR (elementwise/reduction) operations.
+    # ------------------------------------------------------------------ #
+    # VECTOR pipeline (elementwise / reduction ops)
+    # ------------------------------------------------------------------ #
 
-        VECTOR ops are typically memory-bound, limited by UB <-> GM bandwidth.
+    def _estimate_vector(self, op: OpSpec) -> OpCost:
+        """Estimate cost for VECTOR ops using tiled 3-stage pipeline.
+
+        Pipeline per tile: MTE_in → VECTOR → MTE_out
         """
-        dtype = op.inputs[0].dtype.value if op.inputs else "fp16"
+        dtype_str = op.inputs[0].dtype.value if op.inputs else "fp16"
+        dtype_bytes = op.inputs[0].dtype.bytes if op.inputs else 2
         flops = op.flops
         mem_bytes = op.memory_bytes
 
-        vector_peak = self.hw.vector_peak_for(dtype)
-        bw = self.hw.effective_bandwidth(mem_bytes) * 1e9  # B/s
+        vector_peak = self.hw.per_core_vector_peak(dtype_str)
+        mte_bw = self.hw.mte_bw_GBs * 1e9  # B/s
 
-        compute_us = (flops / vector_peak * 1e6) if vector_peak > 0 else 0.0
-        memory_us = (mem_bytes / bw * 1e6) if bw > 0 else 0.0
+        # Tiling: partition data into UB-sized chunks
+        tile_elements, num_tiles, tiles_per_core = self._compute_vector_tiling(op, dtype_bytes)
 
-        # Task scheduling overhead on NPU (~3us typical)
-        task_overhead_us = 3.0
+        if tile_elements <= 0 or tiles_per_core <= 0:
+            # Degenerate case: zero-compute ops (embedding, gather, reshape)
+            memory_us = (mem_bytes / (self.hw.effective_bandwidth(mem_bytes) * 1e9) * 1e6) if mem_bytes > 0 else 0.0
+            return OpCost(
+                compute_us=0.0, memory_us=memory_us, latency_us=memory_us,
+                bound="memory", flops=flops, bytes_accessed=mem_bytes,
+                utilization=0.0,
+            )
 
-        latency_us = max(compute_us, memory_us) + task_overhead_us
-        bound = "compute (PIPE_V)" if compute_us >= memory_us else "memory"
+        total_elements = sum(t.numel for t in op.inputs)
+        if total_elements == 0:
+            total_elements = 1
 
-        if latency_us > 0 and vector_peak > 0:
-            util = flops / ((latency_us - task_overhead_us) * 1e-6 * vector_peak)
+        # Per-tile costs
+        bytes_per_tile_in = tile_elements * dtype_bytes
+        bytes_per_tile_out = tile_elements * dtype_bytes
+        flops_per_tile = flops * tile_elements / total_elements if total_elements > 0 else 0
+
+        mte_in_us = (bytes_per_tile_in / mte_bw * 1e6) if mte_bw > 0 else 0.0
+        vector_us = (flops_per_tile / vector_peak * 1e6) if vector_peak > 0 else 0.0
+        mte_out_us = (bytes_per_tile_out / mte_bw * 1e6) if mte_bw > 0 else 0.0
+
+        # Pipeline overlap: per_tile = max(mte_in, vector, mte_out)
+        per_tile_us = max(mte_in_us, vector_us, mte_out_us)
+
+        # Total
+        per_core_us = tiles_per_core * per_tile_us
+        total_us = per_core_us + self.hw.pipeline_startup_us + self.hw.pipeline_drain_us
+
+        total_vector_us = tiles_per_core * vector_us
+        total_mte_us = tiles_per_core * (mte_in_us + mte_out_us)
+        bound = "compute (PIPE_V)" if total_vector_us >= total_mte_us else "memory"
+
+        if total_us > 0 and vector_peak > 0:
+            effective_time = total_us - self.hw.pipeline_startup_us - self.hw.pipeline_drain_us
+            util = flops / (effective_time * 1e-6 * vector_peak * self.hw.ai_core_count) if effective_time > 0 else 0.0
         else:
             util = 0.0
 
         return OpCost(
-            compute_us=compute_us,
-            memory_us=memory_us,
-            latency_us=latency_us,
+            compute_us=total_vector_us,
+            memory_us=total_mte_us,
+            latency_us=total_us,
             bound=bound,
             flops=flops,
             bytes_accessed=mem_bytes,
             utilization=min(util, 1.0),
         )
 
-    def _estimate_fallback(self, op: OpSpec) -> OpCost:
-        """Fallback for unsupported ops — use basic roofline on VECTOR."""
-        return self._estimate_vector(op)
+    # ------------------------------------------------------------------ #
+    # Tiling helpers
+    # ------------------------------------------------------------------ #
+
+    def _compute_matmul_tiling(self, op: OpSpec, dtype_bytes: int) -> _TilingConfig:
+        """Compute tile sizes for MatMul that fit in the UB.
+
+        For [M, K] x [K, N], tiles must satisfy:
+          double_factor * (Tm*Tk + Tk*Tn) * dtype_bytes + Tm*Tn*4 <= UB_size
+        where double_factor=2 for double-buffering (ping-pong input tiles).
+        """
+        tile = self.hw.cube_tile_size
+        ub_bytes = self.hw.ub_size_kb * 1024
+        double_factor = 2 if self.hw.double_buffer else 1
+
+        # Extract M, K, N
+        if op.op_type == OpType.CONV2D:
+            # Treat Conv2D as implicit matmul
+            if len(op.inputs) >= 2:
+                inp, kernel = op.inputs[0], op.inputs[1]
+                C_out, C_in = kernel.shape[0], kernel.shape[1]
+                Kh = kernel.shape[2] if len(kernel.shape) > 2 else 1
+                Kw = kernel.shape[3] if len(kernel.shape) > 3 else 1
+                N_batch = inp.shape[0] if len(inp.shape) > 0 else 1
+                H_out = op.outputs[0].shape[2] if len(op.outputs[0].shape) > 2 else 1
+                W_out = op.outputs[0].shape[3] if len(op.outputs[0].shape) > 3 else 1
+                M = N_batch * H_out * W_out
+                K = C_in * Kh * Kw
+                N = C_out
+            else:
+                M = K = N = tile
+        elif len(op.inputs) >= 2:
+            a, b = op.inputs[0], op.inputs[1]
+            M = a.shape[-2] if len(a.shape) >= 2 else 1
+            K = a.shape[-1] if len(a.shape) >= 1 else 1
+            N = b.shape[-1] if len(b.shape) >= 2 else 1
+            # Handle batched matmul: batch dims are implicit parallelism
+            batch = 1
+            for d in a.shape[:-2]:
+                batch *= d
+            # Effective M includes batch
+            M = M * batch
+        else:
+            M = K = N = tile
+
+        # Align to tile size
+        def align_up(x):
+            return max(tile, math.ceil(x / tile) * tile)
+
+        # Try K-tile sizes from large to small, find largest Tm/Tn that fits UB
+        best = None
+        for Tk_candidate in self._tile_candidates(K, tile):
+            # Budget: double_factor * (Tm*Tk + Tk*Tn) * dtype + Tm*Tn*4 <= ub
+            # Assume Tm = Tn = T for simplicity, solve for T:
+            # double_factor * 2 * T * Tk * dtype + T*T*4 <= ub
+            # This is quadratic in T; use a simpler iterative approach
+            Tk = min(Tk_candidate, align_up(K))
+
+            # Max Tm/Tn: try square tiles first
+            for T in reversed(self._tile_candidates(min(M, N, 1024), tile)):
+                Tm = min(T, align_up(M))
+                Tn = min(T, align_up(N))
+                needed = double_factor * (Tm * Tk + Tk * Tn) * dtype_bytes + Tm * Tn * 4
+                if needed <= ub_bytes:
+                    best = (Tm, Tn, Tk)
+                    break
+            if best is not None:
+                break
+
+        if best is None:
+            # Minimum tile: single cube tile
+            Tm = Tn = Tk = tile
+        else:
+            Tm, Tn, Tk = best
+
+        num_m = math.ceil(M / Tm) if M > 0 else 1
+        num_n = math.ceil(N / Tn) if N > 0 else 1
+        num_k = math.ceil(K / Tk) if K > 0 else 1
+        total_output_tiles = num_m * num_n
+        tiles_per_core = math.ceil(total_output_tiles / self.hw.ai_core_count)
+
+        return _TilingConfig(
+            Tm=Tm, Tn=Tn, Tk=Tk,
+            num_m_tiles=num_m, num_n_tiles=num_n, num_k_tiles=num_k,
+            tiles_per_core=max(tiles_per_core, 1),
+        )
+
+    def _compute_vector_tiling(self, op: OpSpec, dtype_bytes: int) -> tuple[int, int, int]:
+        """Compute tiling for VECTOR ops. Returns (tile_elements, num_tiles, tiles_per_core)."""
+        ub_bytes = self.hw.ub_size_kb * 1024
+        double_factor = 2 if self.hw.double_buffer else 1
+
+        # UB holds input + output tiles, double-buffered
+        # double_factor * (in_tile + out_tile) * dtype_bytes <= ub_bytes
+        tile_elements = ub_bytes // (double_factor * 2 * dtype_bytes)
+        if tile_elements <= 0:
+            tile_elements = 1
+
+        total_elements = sum(t.numel for t in op.inputs)
+        if total_elements == 0:
+            return (0, 0, 0)
+
+        num_tiles = math.ceil(total_elements / tile_elements)
+        tiles_per_core = math.ceil(num_tiles / self.hw.ai_core_count)
+
+        return (tile_elements, num_tiles, max(tiles_per_core, 1))
+
+    @staticmethod
+    def _tile_candidates(max_dim: int, tile: int) -> list[int]:
+        """Generate tile size candidates aligned to `tile`, from small to large."""
+        candidates = []
+        t = tile
+        while t <= max_dim:
+            candidates.append(t)
+            t *= 2
+        if not candidates:
+            candidates = [tile]
+        return candidates
+
+    # ------------------------------------------------------------------ #
+    # Shared helpers (unchanged)
+    # ------------------------------------------------------------------ #
 
     def _cube_utilization(self, op: OpSpec, tile: int) -> float:
         """Compute CUBE utilization based on tile alignment.
