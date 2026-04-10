@@ -24,6 +24,25 @@ _VECTOR_OPS = {
     OpType.ALL_GATHER, OpType.REDUCE_SCATTER, OpType.DEQUANT,
 }
 
+# Memory-pass multipliers for VECTOR ops.
+# Multi-pass ops (LayerNorm, Softmax) read data multiple times internally:
+#   LayerNorm: pass1 (mean), pass2 (variance), pass3 (normalize+write) → ~3.5x
+#   Softmax:   pass1 (max), pass2 (exp+sum), pass3 (normalize+write) → ~2.3x
+# Calibrated from real Ascend 910C profiling data.
+_VECTOR_MEM_PASSES: dict[OpType, float] = {
+    OpType.LAYER_NORM: 3.5,
+    OpType.SOFTMAX: 2.3,
+    OpType.ROPE: 2.0,       # read + trig compute + write with interleave
+    OpType.RELU: 1.0,
+    OpType.ADD: 1.0,
+    OpType.GELU: 1.0,
+    OpType.SILU: 1.0,
+    OpType.MUL: 1.0,
+    OpType.EMBEDDING: 1.0,
+    OpType.GATHER: 1.0,
+    OpType.DEQUANT: 1.0,
+}
+
 # Data layout preferences per op type
 _LAYOUT_MAP = {
     OpType.MATMUL: "Fractal_NZ",
@@ -148,71 +167,50 @@ class NPUCostModel(CostModel):
     # ------------------------------------------------------------------ #
 
     def _estimate_vector(self, op: OpSpec) -> OpCost:
-        """Estimate cost for VECTOR ops using tiled 3-stage pipeline.
+        """Estimate cost for VECTOR ops using chip-level roofline.
 
-        Pipeline per tile: MTE_in → VECTOR → MTE_out
+        Uses aggregate HBM bandwidth (like CUBE) with per-op memory-pass
+        multipliers to account for multi-pass ops (LayerNorm, Softmax).
+        Calibrated against real Ascend 910C profiling data.
         """
         dtype_str = op.inputs[0].dtype.value if op.inputs else "fp16"
-        dtype_bytes = op.inputs[0].dtype.bytes if op.inputs else 2
         flops = op.flops
         mem_bytes = op.memory_bytes
 
-        vector_peak = self.hw.per_core_vector_peak(dtype_str)
-        vector_efficiency = self.hw.get_efficiency("vector")
+        # --- Memory bound: chip-level aggregate bandwidth ---
+        # Apply per-op memory-pass multiplier for multi-pass ops
+        mem_passes = _VECTOR_MEM_PASSES.get(op.op_type, 1.0)
+        effective_mem_bytes = mem_bytes * mem_passes
+
         mem_efficiency = self.hw.get_efficiency("memory")
-        effective_vector_peak = vector_peak * vector_efficiency
-        mte_bw = self.hw.mte_bw_GBs * mem_efficiency * 1e9  # B/s
+        gm_bw = self.hw.main_memory_bandwidth() * mem_efficiency * 1e9  # B/s
+        memory_us = (effective_mem_bytes / gm_bw * 1e6) if gm_bw > 0 else 0.0
 
-        # Tiling: partition data into UB-sized chunks
-        tile_elements, num_tiles, tiles_per_core = self._compute_vector_tiling(op, dtype_bytes)
+        # --- Compute bound: chip-level VECTOR peak ---
+        vector_peak = self.hw.vector_peak_for(dtype_str)
+        vector_efficiency = self.hw.get_efficiency("vector")
+        effective_peak = vector_peak * vector_efficiency
+        compute_us = (flops / effective_peak * 1e6) if effective_peak > 0 else 0.0
 
-        if tile_elements <= 0 or tiles_per_core <= 0:
-            # Degenerate case: zero-compute ops (embedding, gather, reshape)
-            effective_bw = self.hw.effective_bandwidth(mem_bytes) * mem_efficiency * 1e9
-            memory_us = (mem_bytes / effective_bw * 1e6) if mem_bytes > 0 else 0.0
-            static_overhead_us = self.hw.get_efficiency("static_vector_us")
-            return OpCost(
-                compute_us=0.0, memory_us=memory_us,
-                latency_us=memory_us + static_overhead_us,
-                bound="memory", flops=flops, bytes_accessed=mem_bytes,
-                utilization=0.0,
-            )
-
-        total_elements = sum(t.numel for t in op.inputs)
-        if total_elements == 0:
-            total_elements = 1
-
-        # Per-tile costs
-        bytes_per_tile_in = tile_elements * dtype_bytes
-        bytes_per_tile_out = tile_elements * dtype_bytes
-        flops_per_tile = flops * tile_elements / total_elements if total_elements > 0 else 0
-
-        mte_in_us = (bytes_per_tile_in / mte_bw * 1e6) if mte_bw > 0 else 0.0
-        vector_us = (flops_per_tile / effective_vector_peak * 1e6) if effective_vector_peak > 0 else 0.0
-        mte_out_us = (bytes_per_tile_out / mte_bw * 1e6) if mte_bw > 0 else 0.0
-
-        # Pipeline overlap: per_tile = max(mte_in, vector, mte_out)
-        per_tile_us = max(mte_in_us, vector_us, mte_out_us)
-
-        # Total
-        per_core_us = tiles_per_core * per_tile_us
+        # Static per-op overhead
         static_overhead_us = self.hw.get_efficiency("static_vector_us")
-        total_us = per_core_us + self.hw.pipeline_startup_us + self.hw.pipeline_drain_us + static_overhead_us
 
-        total_vector_us = tiles_per_core * vector_us
-        total_mte_us = tiles_per_core * (mte_in_us + mte_out_us)
-        bound = "compute (PIPE_V)" if total_vector_us >= total_mte_us else "memory"
+        # Roofline: max(compute, memory) + overhead
+        latency_us = max(compute_us, memory_us) + static_overhead_us
 
-        if total_us > 0 and effective_vector_peak > 0:
-            effective_time = total_us - self.hw.pipeline_startup_us - self.hw.pipeline_drain_us - static_overhead_us
-            util = flops / (effective_time * 1e-6 * effective_vector_peak * self.hw.ai_core_count) if effective_time > 0 else 0.0
+        bound = "compute (PIPE_V)" if compute_us >= memory_us else "memory"
+
+        # Utilization
+        if latency_us > static_overhead_us and effective_peak > 0:
+            effective_time = latency_us - static_overhead_us
+            util = flops / (effective_time * 1e-6 * effective_peak) if effective_time > 0 else 0.0
         else:
             util = 0.0
 
         return OpCost(
-            compute_us=total_vector_us,
-            memory_us=total_mte_us,
-            latency_us=total_us,
+            compute_us=compute_us,
+            memory_us=memory_us,
+            latency_us=latency_us,
             bound=bound,
             flops=flops,
             bytes_accessed=mem_bytes,

@@ -86,11 +86,18 @@ def test_gpu_no_efficiency_is_faster():
 
 def test_npu_has_efficiency_factors():
     """910B and 910C presets should have efficiency factors."""
+    # 910B: original analytical factors (validated vs msmodeling at avg 1.046x)
+    assert ASCEND_910B.get_efficiency("cube_fp16") == 0.70
+    assert ASCEND_910B.get_efficiency("cube_bf16") == 0.70
+    assert ASCEND_910B.get_efficiency("vector") == 0.80
+    assert ASCEND_910B.get_efficiency("memory") == 0.60
+    # 910C: calibrated from real profiling data
+    assert ASCEND_910C.get_efficiency("cube_fp16") == 0.59
+    assert ASCEND_910C.get_efficiency("cube_bf16") == 0.59
+    assert ASCEND_910C.get_efficiency("vector") == 0.80
+    assert ASCEND_910C.get_efficiency("memory") == 0.71
+    # Both share static overheads
     for hw in [ASCEND_910B, ASCEND_910C]:
-        assert hw.get_efficiency("cube_fp16") == 0.70
-        assert hw.get_efficiency("cube_bf16") == 0.70
-        assert hw.get_efficiency("vector") == 0.80
-        assert hw.get_efficiency("memory") == 0.60
         assert hw.get_efficiency("static_cube_us") == 5.0
         assert hw.get_efficiency("static_vector_us") == 2.0
 

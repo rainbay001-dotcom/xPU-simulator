@@ -177,13 +177,13 @@ ASCEND_910C = AscendSpec(
     pipeline_startup_us=0.8,
     pipeline_drain_us=0.4,
     efficiency_factors={
-        "cube_fp16": 0.70,
-        "cube_bf16": 0.70,
-        "cube_fp32": 0.60,
-        "cube_int8": 0.65,
-        "cube_fp8": 0.65,
+        "cube_fp16": 0.59,       # calibrated from 910C profiling (avg MATMUL ratio 0.84)
+        "cube_bf16": 0.59,
+        "cube_fp32": 0.50,
+        "cube_int8": 0.55,
+        "cube_fp8": 0.55,
         "vector": 0.80,
-        "memory": 0.60,
+        "memory": 0.71,          # calibrated from SILU single-pass profiling
         "static_cube_us": 5.0,
         "static_vector_us": 2.0,
     },
