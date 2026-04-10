@@ -90,6 +90,8 @@ A100_80GB = GPUSpec(
         "elementwise_fp16": 0.85,
         "elementwise_fp32": 0.85,
         "memory": 0.80,
+        "static_tc_us": 5.0,     # per-op overhead for Tensor Core ops
+        "static_cuda_us": 2.0,   # per-op overhead for CUDA Core ops
     },
     interconnect=InterconnectSpec("NVLink", 600, 0.5),
 )
@@ -124,6 +126,8 @@ H100_80GB = GPUSpec(
         "elementwise_fp16": 0.85,
         "elementwise_fp32": 0.85,
         "memory": 0.80,
+        "static_tc_us": 5.0,
+        "static_cuda_us": 2.0,
     },
     interconnect=InterconnectSpec("NVLink", 900, 0.5),
 )

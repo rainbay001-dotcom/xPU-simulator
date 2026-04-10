@@ -45,13 +45,16 @@ class GPUCostModel(CostModel):
         compute_us = (flops / effective_peak * 1e6) if effective_peak > 0 else 0.0
         memory_us = (mem_bytes / effective_bw * 1e6) if effective_bw > 0 else 0.0
 
-        # Kernel launch overhead (~5us typical)
-        launch_overhead_us = 5.0
-        latency_us = max(compute_us, memory_us) + launch_overhead_us
+        # Per-op static overhead: Tensor Core ops ~5us, CUDA Core ops ~2us
+        if is_tc_op:
+            static_overhead_us = self.hw.get_efficiency("static_tc_us")
+        else:
+            static_overhead_us = self.hw.get_efficiency("static_cuda_us")
+        latency_us = max(compute_us, memory_us) + static_overhead_us
         bound = "compute" if compute_us >= memory_us else "memory"
 
-        if latency_us > launch_overhead_us and effective_peak > 0:
-            utilization = flops / ((latency_us - launch_overhead_us) * 1e-6 * effective_peak)
+        if latency_us > static_overhead_us and effective_peak > 0:
+            utilization = flops / ((latency_us - static_overhead_us) * 1e-6 * effective_peak)
         else:
             utilization = 0.0
 

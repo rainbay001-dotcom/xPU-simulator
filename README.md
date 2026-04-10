@@ -5,9 +5,9 @@ Given a model architecture, xPU-Simulator builds a computation graph, estimates 
 
 ## Features
 
-- **Roofline-based cost model** with compute/memory bound classification
-- **NVIDIA GPU backend** (A100, H100) with kernel launch overhead
-- **Huawei Ascend NPU backend** (910B, 910C) with CUBE/VECTOR pipeline modeling, tile alignment, and format conversion costs
+- **Roofline-based cost model** with compute/memory bound classification, hardware efficiency factors, and per-op static overhead
+- **NVIDIA GPU backend** (A100, H100) with Tensor Core / CUDA Core distinction, compute/memory efficiency factors, and op-class-aware static overhead (5µs TC, 2µs CUDA)
+- **Huawei Ascend NPU backend** (910B, 910C) with CA-style tiled pipeline simulation (MTE→CUBE→VECTOR), double-buffering, L2 reuse, tile alignment, format conversion, compute/memory efficiency factors (0.70/0.60), and per-op static overhead (5µs CUBE, 2µs VECTOR)
 - **7 graph extraction methods**: FX trace, torch.export, ONNX, profiler trace, GraphBuilder DSL, ConfigExtractor, DispatchExtractor
 - **Config-driven LLM simulation** from HuggingFace `config.json` — supports 8 architectures (LLaMA, Mistral, Qwen2, Mixtral, DeepSeek, GPT-2, Falcon, GPT-NeoX)
 - **Quantization-aware modeling**: INT4/INT8/FP8 weight and activation quantization with dequantization overhead, HuggingFace `quantization_config` parsing (GPTQ, AWQ, FP8)
@@ -214,7 +214,7 @@ print(f"Hit rate: {calibrated.hit_rate:.1%}")
 ### DeepSeek V3.2 671B Example
 
 ```bash
-# Default: batch=1, seq_len=1024
+# ConfigExtractor: batch=1, seq_len=1024
 python examples/deepseek_v3_2.py
 
 # Custom batch size and sequence length
@@ -222,6 +222,10 @@ python examples/deepseek_v3_2.py 4 2048
 
 # Compare dense MLA vs DSA (sparse attention)
 python examples/deepseek_v3_2.py --dsa 1 4096
+
+# DispatchExtractor: full aten-level graph with TP comparison
+python examples/deepseek_v3_dispatch.py --model=deepseek-ai/DeepSeek-V3-0324 --tp=2
+python examples/deepseek_v3_dispatch.py --model=deepseek-ai/DeepSeek-V3 --tp=4
 ```
 
 ### CLI
@@ -382,6 +386,20 @@ export_html_report(graph, results, "report.html",
 | Ascend 910B | NPU | 320 TFLOPS (CUBE) | 640 TOPS (FP8) | 1600 GB/s | HCCS 392 GB/s |
 | Ascend 910C | NPU | 400 TFLOPS (CUBE) | 800 TOPS (FP8) | 1800 GB/s | HCCS 600 GB/s |
 
+### Efficiency Factors
+
+Raw peak specs are unachievable in practice. The simulator applies hardware-calibrated efficiency factors (inspired by [msmodeling](https://gitee.com/ascend/msmodeling)):
+
+| Factor | GPU (A100/H100) | NPU (910B/910C) | Effect |
+|--------|-----------------|------------------|--------|
+| Compute (matmul) | 0.70 | 0.70 | Effective TFLOPS = peak × factor |
+| Compute (elementwise) | 0.85 | 0.80 (VECTOR) | Elementwise/norm/activation ops |
+| Memory bandwidth | 0.80 | 0.60 | Effective BW = peak × factor |
+| Static overhead (matmul) | 5 µs/op | 5 µs/op | Kernel dispatch, sync, etc. |
+| Static overhead (other) | 2 µs/op | 2 µs/op | Per-op fixed cost |
+
+These factors bring estimates significantly closer to measured hardware performance.
+
 ## Project Structure
 
 ```
@@ -404,8 +422,8 @@ python -m pytest tests/ -v
 
 ## Limitations
 
-- Cost estimates are analytical (roofline-based), not cycle-accurate — use profiling calibration for higher accuracy
+- Cost estimates are analytical (roofline + efficiency factors), not cycle-accurate — use profiling calibration for higher accuracy
 - NPU format conversion costs are approximate
 - MoE expert routing assumes uniform token distribution
-- Communication costs use analytical ring/tree models (no topology-aware routing)
+- Communication costs use analytical ring/tree models (no hierarchical topology routing)
 - Serving simulation uses simplified continuous batching (no preemption or speculative decoding)

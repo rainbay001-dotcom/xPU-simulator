@@ -347,6 +347,7 @@ def export_html_report(
     serving_metrics=None,
     tp_comparison: dict = None,
     fusion_info: dict = None,
+    accuracy_info: dict = None,
 ):
     """Export a full interactive HTML report.
 
@@ -361,6 +362,7 @@ def export_html_report(
         serving_metrics: Optional ServingMetrics object for serving simulation results.
         tp_comparison: Optional dict with TP comparison data.
         fusion_info: Optional dict with fusion pass results::
+        accuracy_info: Optional dict with per-device efficiency factors::
 
             {
                 "original_nodes": 6513, "fused_nodes": 3425,
@@ -478,6 +480,7 @@ def export_html_report(
         "serving": serving_data,
         "tp_comparison": tp_comparison,
         "fusion_info": fusion_info,
+        "accuracy_info": accuracy_info,
     }
 
     html = _HTML_TEMPLATE.replace("__REPORT_DATA__", json.dumps(report_data))
@@ -690,6 +693,31 @@ if (DATA.fusion_info) {
         }
         html += `</div>`;
     }
+}
+
+// Cost Model Accuracy section
+if (DATA.accuracy_info && DATA.accuracy_info.devices) {
+    html += `<h2>Cost Model Accuracy</h2>`;
+    html += `<p style="color:#8b949e;font-size:13px;margin-bottom:12px">Hardware efficiency factors applied to raw roofline peaks. Brings estimates closer to measured performance.</p>`;
+    html += `<table class="comparison-table"><thead><tr>
+        <th>Device</th><th>Compute Eff.</th><th>Memory Eff.</th><th>Static/MatMul</th><th>Static/Other</th><th>Effective Peak</th><th>Effective BW</th>
+    </tr></thead><tbody>`;
+    for (const d of DATA.accuracy_info.devices) {
+        const compEff = (d.compute_efficiency * 100).toFixed(0);
+        const memEff = (d.memory_efficiency * 100).toFixed(0);
+        const compColor = d.compute_efficiency >= 0.8 ? '#3fb950' : d.compute_efficiency >= 0.6 ? '#e3b341' : '#f85149';
+        const memColor = d.memory_efficiency >= 0.8 ? '#3fb950' : d.memory_efficiency >= 0.6 ? '#e3b341' : '#f85149';
+        html += `<tr>
+            <td><strong>${d.name}</strong></td>
+            <td><span style="color:${compColor};font-weight:600">${compEff}%</span></td>
+            <td><span style="color:${memColor};font-weight:600">${memEff}%</span></td>
+            <td>${d.static_matmul_us} µs</td>
+            <td>${d.static_other_us} µs</td>
+            <td>${d.effective_peak}</td>
+            <td>${d.effective_bw}</td>
+        </tr>`;
+    }
+    html += `</tbody></table>`;
 }
 
 // Comparison cards

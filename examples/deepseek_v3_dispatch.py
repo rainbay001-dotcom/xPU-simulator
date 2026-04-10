@@ -171,6 +171,8 @@ def main():
     seq_len = 4096
 
     # Parse args
+    model_id = "deepseek-ai/DeepSeek-V3"
+    model_label = "DeepSeek V3 671B"
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if len(args) > 0:
         batch_size = int(args[0])
@@ -178,9 +180,21 @@ def main():
         seq_len = int(args[1])
 
     tp_size = 3
+    for a in sys.argv[1:]:
+        if a.startswith("--tp="):
+            tp_size = int(a.split("=")[1])
+        elif a.startswith("--model="):
+            model_id = a.split("=", 1)[1]
+    # Auto-detect label from model_id
+    if "V3-0324" in model_id or "v3.2" in model_id.lower() or "V3.2" in model_id:
+        model_label = "DeepSeek V3.2 671B"
+    elif "V3" in model_id:
+        model_label = "DeepSeek V3 671B"
+    else:
+        model_label = model_id.split("/")[-1]
 
     print(f"\n{'='*70}")
-    print(f"  DeepSeek V3 671B — DispatchExtractor Simulation")
+    print(f"  {model_label} — DispatchExtractor Simulation")
     print(f"  Batch={batch_size}, SeqLen={seq_len}, TP=1 vs TP={tp_size}")
     print(f"{'='*70}\n")
 
@@ -188,10 +202,10 @@ def main():
     print("Extracting graph with DispatchExtractor (meta tensors, no GPU needed)...")
     ext = DispatchExtractor(skip_reshapes=True)
     graph = ext.extract_from_config(
-        "deepseek-ai/DeepSeek-V3",
+        model_id,
         batch_size=batch_size,
         seq_len=seq_len,
-        graph_name="DeepSeek-V3-671B",
+        graph_name=model_label,
     )
     print(f"  TP=1 graph: {graph.num_nodes} aten ops, {graph.num_edges} edges")
 
@@ -337,14 +351,44 @@ def main():
         "tp_size": tp_size,
     }
 
+    # Accuracy info: per-device efficiency factors
+    def _fmt_tflops(v):
+        return f"{v / 1e12:.0f} TFLOPS" if v >= 1e12 else f"{v / 1e9:.0f} GFLOPS"
+    def _fmt_bw(v):
+        return f"{v:.0f} GB/s"
+
+    accuracy_devices = []
+    for name, base_model, hw_spec in hw_configs:
+        if hasattr(hw_spec, 'efficiency_factors') and hw_spec.efficiency_factors:
+            ef = hw_spec.efficiency_factors
+            # Compute efficiency: pick the matmul/cube fp16 factor
+            comp_eff = ef.get("matmul_fp16") or ef.get("cube_fp16") or ef.get("cube_bf16", 1.0)
+            mem_eff = ef.get("memory", 1.0)
+            static_mm = ef.get("static_tc_us") or ef.get("static_cube_us", 0)
+            static_other = ef.get("static_cuda_us") or ef.get("static_vector_us", 0)
+            peak = hw_spec.peak_flops_for("fp16") or hw_spec.peak_flops_for("bf16")
+            bw = hw_spec.main_memory_bandwidth()
+            accuracy_devices.append({
+                "name": name,
+                "compute_efficiency": comp_eff,
+                "memory_efficiency": mem_eff,
+                "static_matmul_us": static_mm,
+                "static_other_us": static_other,
+                "effective_peak": _fmt_tflops(peak * comp_eff),
+                "effective_bw": _fmt_bw(bw * mem_eff),
+            })
+    accuracy_info = {"devices": accuracy_devices} if accuracy_devices else None
+
+    report_name = model_label.lower().replace(" ", "_").replace(".", "")
     fname = export_html_report(
         tp_graph, all_results,
-        "deepseek_v3_dispatch_report.html",
-        model_name=f"DeepSeek V3 671B — DispatchExtractor (batch={batch_size}, seq={seq_len})",
+        f"{report_name}_dispatch_report.html",
+        model_name=f"{model_label} — DispatchExtractor (batch={batch_size}, seq={seq_len})",
         config=config,
         n_dense=3,
         fusion_info=fusion_info,
         tp_comparison=tp_comparison_data,
+        accuracy_info=accuracy_info,
     )
     print(f"Exported: {fname}")
 

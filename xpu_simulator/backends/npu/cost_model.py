@@ -106,10 +106,12 @@ class NPUCostModel(CostModel):
         # Compute tiling
         tiling = self._compute_matmul_tiling(op, dtype_bytes)
 
-        # Per-core peaks
+        # Per-core peaks with efficiency factors
         cube_peak = self.hw.per_core_cube_peak(dtype_str)  # FLOPS
-        mte_bw = self.hw.mte_bw_GBs * 1e9  # B/s
-        mte_l2_bw = self.hw.mte_l2_bw_GBs * 1e9  # B/s
+        cube_efficiency = self.hw.get_efficiency(f"cube_{dtype_str}")
+        mem_efficiency = self.hw.get_efficiency("memory")
+        mte_bw = self.hw.mte_bw_GBs * mem_efficiency * 1e9  # B/s
+        mte_l2_bw = self.hw.mte_l2_bw_GBs * mem_efficiency * 1e9  # B/s
 
         Tm, Tn, Tk = tiling.Tm, tiling.Tn, tiling.Tk
 
@@ -118,7 +120,7 @@ class NPUCostModel(CostModel):
         mte_in_us = (bytes_in / mte_bw * 1e6) if mte_bw > 0 else 0.0
 
         cube_flops = 2 * Tm * Tk * Tn
-        effective_cube_peak = cube_peak * utilization
+        effective_cube_peak = cube_peak * utilization * cube_efficiency
         cube_us = (cube_flops / effective_cube_peak * 1e6) if effective_cube_peak > 0 else 0.0
 
         # MTE_out: write output tile (only after last K-tile, but pipelined)
@@ -173,7 +175,10 @@ class NPUCostModel(CostModel):
         else:
             format_overhead_us = self._format_conversion_cost(op, dtype_str)
 
-        latency_us = total_compute_us + format_overhead_us
+        # Static per-op overhead (kernel dispatch, synchronization, etc.)
+        static_overhead_us = self.hw.get_efficiency("static_cube_us")
+
+        latency_us = total_compute_us + format_overhead_us + static_overhead_us
 
         # For OpCost, report the dominant component
         # compute_us = CUBE pipeline time, memory_us = MTE component
@@ -206,16 +211,22 @@ class NPUCostModel(CostModel):
         mem_bytes = op.memory_bytes
 
         vector_peak = self.hw.per_core_vector_peak(dtype_str)
-        mte_bw = self.hw.mte_bw_GBs * 1e9  # B/s
+        vector_efficiency = self.hw.get_efficiency("vector")
+        mem_efficiency = self.hw.get_efficiency("memory")
+        effective_vector_peak = vector_peak * vector_efficiency
+        mte_bw = self.hw.mte_bw_GBs * mem_efficiency * 1e9  # B/s
 
         # Tiling: partition data into UB-sized chunks
         tile_elements, num_tiles, tiles_per_core = self._compute_vector_tiling(op, dtype_bytes)
 
         if tile_elements <= 0 or tiles_per_core <= 0:
             # Degenerate case: zero-compute ops (embedding, gather, reshape)
-            memory_us = (mem_bytes / (self.hw.effective_bandwidth(mem_bytes) * 1e9) * 1e6) if mem_bytes > 0 else 0.0
+            effective_bw = self.hw.effective_bandwidth(mem_bytes) * mem_efficiency * 1e9
+            memory_us = (mem_bytes / effective_bw * 1e6) if mem_bytes > 0 else 0.0
+            static_overhead_us = self.hw.get_efficiency("static_vector_us")
             return OpCost(
-                compute_us=0.0, memory_us=memory_us, latency_us=memory_us,
+                compute_us=0.0, memory_us=memory_us,
+                latency_us=memory_us + static_overhead_us,
                 bound="memory", flops=flops, bytes_accessed=mem_bytes,
                 utilization=0.0,
             )
@@ -230,7 +241,7 @@ class NPUCostModel(CostModel):
         flops_per_tile = flops * tile_elements / total_elements if total_elements > 0 else 0
 
         mte_in_us = (bytes_per_tile_in / mte_bw * 1e6) if mte_bw > 0 else 0.0
-        vector_us = (flops_per_tile / vector_peak * 1e6) if vector_peak > 0 else 0.0
+        vector_us = (flops_per_tile / effective_vector_peak * 1e6) if effective_vector_peak > 0 else 0.0
         mte_out_us = (bytes_per_tile_out / mte_bw * 1e6) if mte_bw > 0 else 0.0
 
         # Pipeline overlap: per_tile = max(mte_in, vector, mte_out)
@@ -238,15 +249,16 @@ class NPUCostModel(CostModel):
 
         # Total
         per_core_us = tiles_per_core * per_tile_us
-        total_us = per_core_us + self.hw.pipeline_startup_us + self.hw.pipeline_drain_us
+        static_overhead_us = self.hw.get_efficiency("static_vector_us")
+        total_us = per_core_us + self.hw.pipeline_startup_us + self.hw.pipeline_drain_us + static_overhead_us
 
         total_vector_us = tiles_per_core * vector_us
         total_mte_us = tiles_per_core * (mte_in_us + mte_out_us)
         bound = "compute (PIPE_V)" if total_vector_us >= total_mte_us else "memory"
 
-        if total_us > 0 and vector_peak > 0:
-            effective_time = total_us - self.hw.pipeline_startup_us - self.hw.pipeline_drain_us
-            util = flops / (effective_time * 1e-6 * vector_peak * self.hw.ai_core_count) if effective_time > 0 else 0.0
+        if total_us > 0 and effective_vector_peak > 0:
+            effective_time = total_us - self.hw.pipeline_startup_us - self.hw.pipeline_drain_us - static_overhead_us
+            util = flops / (effective_time * 1e-6 * effective_vector_peak * self.hw.ai_core_count) if effective_time > 0 else 0.0
         else:
             util = 0.0
 
@@ -433,7 +445,8 @@ class NPUCostModel(CostModel):
         # Estimate: conversion reads input + writes in new format
         # ~1.5x overhead compared to simple copy
         total_input_bytes = sum(t.size_bytes for t in op.inputs)
-        gm_bw = self.hw.main_memory_bandwidth() * 1e9
+        mem_efficiency = self.hw.get_efficiency("memory")
+        gm_bw = self.hw.main_memory_bandwidth() * mem_efficiency * 1e9
         if gm_bw == 0:
             return 0.0
 

@@ -40,10 +40,12 @@ class AscendSpec(HardwareSpec):
         double_buffer: bool = True,          # Double-buffering enabled
         pipeline_startup_us: float = 2.0,    # Pipeline fill latency
         pipeline_drain_us: float = 1.0,      # Pipeline drain latency
+        efficiency_factors: dict[str, float] | None = None,
         interconnect: InterconnectSpec | None = None,
     ):
         self._name = name
         self.interconnect = interconnect
+        self.efficiency_factors = efficiency_factors or {}
         self.ai_core_count = ai_core_count
         self._cube_peak = cube_peak_tflops
         self._vector_peak = vector_peak_tflops
@@ -100,6 +102,10 @@ class AscendSpec(HardwareSpec):
         """VECTOR peak FLOPS for a single AI core."""
         return self.vector_peak_for(dtype) / self.ai_core_count
 
+    def get_efficiency(self, category: str) -> float:
+        """Get efficiency factor for an op category. Returns 1.0 if not set."""
+        return self.efficiency_factors.get(category, 1.0)
+
     def get_mem_level(self, name: str) -> MemLevel:
         """Get a specific memory level by name."""
         for level in self._memory_hierarchy:
@@ -133,6 +139,17 @@ ASCEND_910B = AscendSpec(
     mte_l2_bw_GBs=106.7,    # ~2x GM per-core
     pipeline_startup_us=2.0,
     pipeline_drain_us=1.0,
+    efficiency_factors={
+        "cube_fp16": 0.70,
+        "cube_bf16": 0.70,
+        "cube_fp32": 0.60,
+        "cube_int8": 0.65,
+        "cube_fp8": 0.65,
+        "vector": 0.80,
+        "memory": 0.60,
+        "static_cube_us": 5.0,    # per-CUBE-op overhead (dispatch, sync, etc.)
+        "static_vector_us": 2.0,  # per-VECTOR-op overhead
+    },
     interconnect=InterconnectSpec("HCCS", 392, 1.0),
 )
 
@@ -159,5 +176,16 @@ ASCEND_910C = AscendSpec(
     mte_l2_bw_GBs=125.0,    # ~2x GM per-core
     pipeline_startup_us=1.5,
     pipeline_drain_us=0.8,
+    efficiency_factors={
+        "cube_fp16": 0.70,
+        "cube_bf16": 0.70,
+        "cube_fp32": 0.60,
+        "cube_int8": 0.65,
+        "cube_fp8": 0.65,
+        "vector": 0.80,
+        "memory": 0.60,
+        "static_cube_us": 5.0,
+        "static_vector_us": 2.0,
+    },
     interconnect=InterconnectSpec("HCCS", 600, 1.0),
 )
