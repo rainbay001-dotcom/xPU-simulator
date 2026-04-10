@@ -1,0 +1,5 @@
+model,xpu_ms,msmodeling_ms,ratio,diff_pct
+LLaMA-3.1-8B,79.6,79.7,0.999,-0.1
+LLaMA-3.1-70B,692.2,645.7,1.072,7.2
+Qwen2-7B,74.8,72.3,1.034,3.4
+Qwen2-72B,711.5,660.4,1.077,7.7
