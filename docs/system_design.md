@@ -350,9 +350,10 @@ H100_80GB = GPUSpec(
 ```
 
 **GPUCostModel** distinguishes:
-- Tensor Core ops (MATMUL, CONV2D): use `peak_tflops[dtype]`
-- CUDA Core ops (everything else): use `cuda_core_flops` (lower peak)
-- Adds 5 us kernel launch overhead per op
+- Tensor Core ops (MATMUL, CONV2D): use `peak_tflops[dtype]` × compute efficiency (0.70)
+- CUDA Core ops (everything else): use `cuda_core_flops` × compute efficiency (0.85)
+- Memory bandwidth scaled by memory efficiency factor (0.80)
+- Per-op static overhead: 5 µs for Tensor Core ops, 2 µs for CUDA Core ops (kernel dispatch, sync)
 
 #### 3.3.2 NPU Backend
 
@@ -381,10 +382,18 @@ For MATMUL [M, K] x [K, N]:
   4. Total = max(sum_MTE, sum_CUBE) across all tiles, divided by num_cores
 
 For elementwise/reduction ops:
-  1. Vector tiling: process in chunks fitting L1
+  1. Vector tiling: process in chunks fitting UB
   2. MTE_in → VECTOR → MTE_out pipeline
   3. Parallelized across cores
 ```
+
+**Efficiency factors** (inspired by msmodeling) are applied to raw hardware peaks:
+- CUBE compute: 0.70 (FP16/BF16), 0.65 (INT8/FP8), 0.60 (FP32)
+- VECTOR compute: 0.80
+- MTE bandwidth (memory): 0.60 — applied to both GM→UB and L2→UB transfers
+- Static overhead: 5 µs per CUBE op, 2 µs per VECTOR op (kernel dispatch, synchronization)
+
+These bring estimates significantly closer to measured hardware performance.
 
 ---
 
@@ -746,7 +755,7 @@ MY_RULES = DISPATCH_FUSION_RULES + [MyFusion()]
 
 ### Current Limitations
 
-1. **Analytical estimates only**: Roofline models don't capture memory hierarchy effects, warp scheduling, or bank conflicts. Use `CalibratedCostModel` for higher accuracy.
+1. **Analytical estimates only**: Roofline models with efficiency factors don't capture warp scheduling or bank conflicts. Use `CalibratedCostModel` for higher accuracy.
 2. **No cycle-accurate simulation**: The ASAP scheduler models resource contention at a coarse granularity (resource type), not at the hardware pipeline level.
 3. **MoE routing assumed uniform**: ConfigExtractor assumes uniform token distribution across experts. DispatchExtractor captures actual routing but only for the specific input.
 4. **TP sharding heuristics**: DispatchExtractor's post-extraction TP transform uses heuristic column/row-parallel assignment based on dimension ratios.
@@ -758,7 +767,6 @@ MY_RULES = DISPATCH_FUSION_RULES + [MyFusion()]
 - **More attention patterns**: Block sparse, linear attention, Mamba/SSM
 - **Intra-op overlap**: Model CUBE/VECTOR overlap within a single op (currently only inter-op)
 - **Memory capacity checks**: Warn when model + KV cache exceeds device HBM
-- **Efficiency calibration**: Learn per-op efficiency factors from profiling data (like msmodeling's 0.7 compute / 0.6 memory factors)
 - **Multi-node simulation**: Model inter-node communication (InfiniBand, RoCE)
 - **Speculative decoding**: Model draft + verify passes in the serving simulator
 
