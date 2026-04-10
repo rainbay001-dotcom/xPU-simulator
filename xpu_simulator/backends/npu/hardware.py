@@ -137,8 +137,8 @@ ASCEND_910B = AscendSpec(
     gm_bw_GBs=1600,
     mte_bw_GBs=53.3,        # 1600 / 30 cores
     mte_l2_bw_GBs=106.7,    # ~2x GM per-core
-    pipeline_startup_us=2.0,
-    pipeline_drain_us=1.0,
+    pipeline_startup_us=1.0,
+    pipeline_drain_us=0.5,
     efficiency_factors={
         "cube_fp16": 0.70,
         "cube_bf16": 0.70,
@@ -174,8 +174,8 @@ ASCEND_910C = AscendSpec(
     gm_bw_GBs=1800,
     mte_bw_GBs=56.3,        # 1800 / 32 cores
     mte_l2_bw_GBs=125.0,    # ~2x GM per-core
-    pipeline_startup_us=1.5,
-    pipeline_drain_us=0.8,
+    pipeline_startup_us=0.8,
+    pipeline_drain_us=0.4,
     efficiency_factors={
         "cube_fp16": 0.70,
         "cube_bf16": 0.70,

@@ -86,8 +86,13 @@ A100_80GB = GPUSpec(
     },
     efficiency_factors={
         "matmul_fp16": 0.70,
+        "matmul_bf16": 0.70,
+        "matmul_fp8": 0.70,     # FP8 falls back to FP16 peak on A100
+        "matmul_int8": 0.65,
         "matmul_fp32": 0.65,
         "elementwise_fp16": 0.85,
+        "elementwise_bf16": 0.85,
+        "elementwise_fp8": 0.85,
         "elementwise_fp32": 0.85,
         "memory": 0.80,
         "static_tc_us": 5.0,     # per-op overhead for Tensor Core ops
@@ -122,8 +127,13 @@ H100_80GB = GPUSpec(
     },
     efficiency_factors={
         "matmul_fp16": 0.70,
+        "matmul_bf16": 0.70,
+        "matmul_fp8": 0.65,
+        "matmul_int8": 0.65,
         "matmul_fp32": 0.65,
         "elementwise_fp16": 0.85,
+        "elementwise_bf16": 0.85,
+        "elementwise_fp8": 0.85,
         "elementwise_fp32": 0.85,
         "memory": 0.80,
         "static_tc_us": 5.0,

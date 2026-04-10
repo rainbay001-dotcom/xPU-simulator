@@ -33,9 +33,28 @@ class HardwareSpec(ABC):
         """Memory levels from fastest/smallest to slowest/largest."""
         ...
 
+    # Fallback chain: if a dtype isn't supported, use the next-wider dtype
+    _DTYPE_FALLBACKS = {
+        "fp8": ["fp16", "bf16", "fp32"],
+        "int4": ["int8", "fp16", "bf16", "fp32"],
+        "int8": ["fp16", "bf16", "fp32"],
+        "bf16": ["fp16", "fp32"],
+        "fp16": ["bf16", "fp32"],
+        "fp32": [],
+    }
+
     def peak_flops_for(self, dtype: str) -> float:
-        """Get peak FLOPS for a given dtype."""
-        return self.peak_flops.get(dtype, self.peak_flops.get("fp32", 0))
+        """Get peak FLOPS for a given dtype, with graceful fallback.
+
+        If the hardware doesn't support a dtype (e.g., FP8 on A100),
+        falls back to the next-wider dtype in the chain.
+        """
+        if dtype in self.peak_flops:
+            return self.peak_flops[dtype]
+        for fallback in self._DTYPE_FALLBACKS.get(dtype, []):
+            if fallback in self.peak_flops:
+                return self.peak_flops[fallback]
+        return self.peak_flops.get("fp32", 0)
 
     def main_memory_bandwidth(self) -> float:
         """Bandwidth of the outermost (main) memory level in GB/s."""

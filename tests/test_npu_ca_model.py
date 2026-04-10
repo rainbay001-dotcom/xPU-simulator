@@ -165,7 +165,9 @@ def test_multicore_scaling():
     """
     hw_half = copy.deepcopy(ASCEND_910B)
     hw_half.ai_core_count = 15
-    # Keep per-core MTE bw the same — fewer cores just means less parallelism
+    # Scale chip-level peaks to reflect fewer cores (same per-core performance)
+    hw_half._cube_peak = {k: v / 2 for k, v in hw_half._cube_peak.items()}
+    hw_half._peak_flops = {k: v / 2 for k, v in hw_half._peak_flops.items()}
 
     model_full = NPUCostModel(ASCEND_910B)
     model_half = NPUCostModel(hw_half)

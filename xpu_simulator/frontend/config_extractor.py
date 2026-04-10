@@ -300,3 +300,4 @@ for _model_type in ("llama", "mistral", "qwen2", "mixtral",
 
 # DeepSeek (MLA + mixed dense/MoE)
 ConfigExtractor.register_handler("deepseek_v2", DeepSeekHandler)
+ConfigExtractor.register_handler("deepseek_v3", DeepSeekHandler)
