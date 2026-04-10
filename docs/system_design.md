@@ -714,6 +714,7 @@ MY_RULES = DISPATCH_FUSION_RULES + [MyFusion()]
 | Decode | test_decode.py | 8 | KV cache, decode shapes, TTFT/TPOT |
 | Profiling DB | test_profiling_db.py | 11 | Store/lookup, CSV, calibrated model |
 | Serving | test_serving.py | 11 | Scheduler, KV allocator, request FSM |
+| Efficiency factors | test_efficiency.py | 12 | GPU/NPU efficiency, static overhead, defaults |
 | Visualization | test_visualization.py | 7 | Categorization, SVG export, HTML report |
 
 **Test principles**:
@@ -820,7 +821,8 @@ xpu_simulator/
 │   ├── export_extractor.py         # ExportExtractor (torch.export)
 │   ├── onnx_extractor.py           # ONNXExtractor
 │   ├── profiler_extractor.py       # ProfilerExtractor (Chrome trace)
-│   └── op_registry.py              # OpRegistry (name → OpType mapping)
+│   ├── op_registry.py              # OpRegistry (name → OpType mapping)
+│   └── _torch_utils.py             # Torch utility helpers
 ├── serving/
 │   ├── config.py                   # ServingConfig
 │   ├── request.py                  # Request, RequestState
@@ -834,4 +836,8 @@ xpu_simulator/
     ├── visualize.py                # SVG architecture diagrams
     ├── profiling.py                # Profiling utilities
     └── roofline.py                 # Roofline chart generation
+reports/                            # Generated HTML reports and Perfetto traces
+examples/                           # Example simulation scripts
+docs/                               # System design documentation
+tests/                              # 171 tests across 17 test files
 ```

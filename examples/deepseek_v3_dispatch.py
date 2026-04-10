@@ -13,6 +13,7 @@ Usage:
 """
 
 import sys
+import os
 import math
 from copy import deepcopy
 from collections import Counter
@@ -167,6 +168,7 @@ def apply_tp_to_dispatch_graph(
 
 
 def main():
+    os.makedirs("reports", exist_ok=True)
     batch_size = 1
     seq_len = 4096
 
@@ -382,7 +384,7 @@ def main():
     report_name = model_label.lower().replace(" ", "_").replace(".", "")
     fname = export_html_report(
         tp_graph, all_results,
-        f"{report_name}_dispatch_report.html",
+        f"reports/{report_name}_dispatch_report.html",
         model_name=f"{model_label} — DispatchExtractor (batch={batch_size}, seq={seq_len})",
         config=config,
         n_dense=3,

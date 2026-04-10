@@ -1,8 +1,11 @@
 """
 Side-by-side comparison: xPU-simulator vs msmodeling analytical formulas.
 
-msmodeling uses the same roofline model (latency = max(compute_time, memory_time))
-but applies efficiency factors and static op costs that xPU-simulator does not.
+Both use roofline models (latency = max(compute_time, memory_time)) with
+efficiency factors and static per-op overhead. xPU-simulator now includes
+hardware-calibrated efficiency factors (compute 0.70, memory 0.60-0.80)
+and per-op static overhead (5µs matmul, 2µs other) matching msmodeling's
+approach. This script compares the two formulations to validate alignment.
 
 This script:
 1. Runs xPU-simulator's ConfigExtractor on DeepSeek V3.2 671B

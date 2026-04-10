@@ -13,6 +13,7 @@ We model a single forward pass (prefill) for a given batch_size and seq_len.
 """
 
 import sys
+import os
 sys.path.insert(0, ".")
 
 from xpu_simulator.core.operator import Dtype
@@ -312,6 +313,7 @@ def run_tp_comparison(batch_size: int, seq_len: int, tp_size: int = 2,
 
 
 if __name__ == "__main__":
+    os.makedirs("reports", exist_ok=True)
     # Default: batch=1, seq_len=1024 (typical prefill)
     batch_size = 1
     seq_len = 1024
@@ -400,12 +402,40 @@ if __name__ == "__main__":
     # Use the TP graph for the report if available (shows comm ops in architecture)
     report_graph = tp_graph if tp_mode and tp_graph else graph
 
+    # Build accuracy info from hardware efficiency factors
+    def _fmt_tflops(v):
+        return f"{v / 1e12:.0f} TFLOPS" if v >= 1e12 else f"{v / 1e9:.0f} GFLOPS"
+    def _fmt_bw(v):
+        return f"{v:.0f} GB/s"
+
+    accuracy_devices = []
+    for name, base_model, hw_spec in hw_list:
+        ef = getattr(hw_spec, 'efficiency_factors', None) or {}
+        if ef:
+            comp_eff = ef.get("matmul_fp16") or ef.get("cube_fp16") or ef.get("cube_bf16", 1.0)
+            mem_eff = ef.get("memory", 1.0)
+            static_mm = ef.get("static_tc_us") or ef.get("static_cube_us", 0)
+            static_other = ef.get("static_cuda_us") or ef.get("static_vector_us", 0)
+            peak = hw_spec.peak_flops_for("fp16") or hw_spec.peak_flops_for("bf16")
+            bw = hw_spec.main_memory_bandwidth()
+            accuracy_devices.append({
+                "name": name,
+                "compute_efficiency": comp_eff,
+                "memory_efficiency": mem_eff,
+                "static_matmul_us": static_mm,
+                "static_other_us": static_other,
+                "effective_peak": _fmt_tflops(peak * comp_eff),
+                "effective_bw": _fmt_bw(bw * mem_eff),
+            })
+    accuracy_info = {"devices": accuracy_devices} if accuracy_devices else None
+
     fname = export_html_report(
-        report_graph, results, "deepseek_v3.2_report.html",
+        report_graph, results, "reports/deepseek_v3.2_report.html",
         model_name=f"DeepSeek V3.2 671B (batch={batch_size}, seq={seq_len})",
         config=config,
         n_dense=N_DENSE_LAYERS,
         tp_comparison=tp_comparison_data,
+        accuracy_info=accuracy_info,
     )
     print(f"Exported: {fname}")
 
@@ -432,7 +462,7 @@ if __name__ == "__main__":
             dsa_results[device_label] = PerformanceEvaluator(cost_model).run(dsa_graph, overlap=True)
 
         dsa_fname = export_html_report(
-            dsa_graph, dsa_results, "deepseek_v3.2_dsa_report.html",
+            dsa_graph, dsa_results, "reports/deepseek_v3.2_dsa_report.html",
             model_name=f"DeepSeek V3.2 671B + DSA (batch={batch_size}, seq={seq_len})",
             config=dsa_config,
             n_dense=N_DENSE_LAYERS,

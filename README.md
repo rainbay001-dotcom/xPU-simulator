@@ -410,8 +410,9 @@ xpu_simulator/
   serving/        # Serving simulation: scheduler, KV cache allocator, request state, metrics, throughput optimizer
   utils/          # HTML reports, Chrome tracing, op categorization
   cli.py          # Command-line interface
-examples/         # DeepSeek V3.2 671B simulation
-tests/            # 159 tests across 16 test files
+examples/         # DeepSeek V3.2 671B simulation scripts
+reports/          # Generated HTML reports and Perfetto traces
+tests/            # 171 tests across 17 test files
 ```
 
 ## Running Tests
