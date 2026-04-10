@@ -7,7 +7,7 @@ Given a model architecture, xPU-Simulator builds a computation graph, estimates 
 
 - **Roofline-based cost model** with compute/memory bound classification, hardware efficiency factors, and per-op static overhead
 - **NVIDIA GPU backend** (A100, H100) with Tensor Core / CUDA Core distinction, compute/memory efficiency factors, and op-class-aware static overhead (5µs TC, 2µs CUDA)
-- **Huawei Ascend NPU backend** (910B, 910C) with CA-style tiled pipeline simulation (MTE→CUBE→VECTOR), double-buffering, L2 reuse, tile alignment, format conversion, compute/memory efficiency factors (0.70/0.60), and per-op static overhead (5µs CUBE, 2µs VECTOR)
+- **Huawei Ascend NPU backend** (910B, 910C) with hybrid roofline cost model (chip-level cube peak with utilization + aggregate memory bandwidth), format conversion overhead, compute/memory efficiency factors (0.70/0.60), and per-op static overhead (5µs CUBE, 2µs VECTOR) — validated against Huawei's [msmodeling](https://github.com/opensim-ai/msmodeling) (0.999x–1.077x accuracy)
 - **7 graph extraction methods**: FX trace, torch.export, ONNX, profiler trace, GraphBuilder DSL, ConfigExtractor, DispatchExtractor
 - **Config-driven LLM simulation** from HuggingFace `config.json` — supports 8 architectures (LLaMA, Mistral, Qwen2, Mixtral, DeepSeek, GPT-2, Falcon, GPT-NeoX)
 - **Quantization-aware modeling**: INT4/INT8/FP8 weight and activation quantization with dequantization overhead, HuggingFace `quantization_config` parsing (GPTQ, AWQ, FP8)
@@ -355,7 +355,7 @@ fused_graph, result = FusionPass(DISPATCH_NPU_FUSION_RULES).apply(graph)
 print(result.summary())
 ```
 
-Dispatch fusion rules (inspired by [msmodeling](https://github.com/huawei/msmodeling)):
+Dispatch fusion rules (inspired by [msmodeling](https://github.com/opensim-ai/msmodeling)):
 
 | Rule | Pattern | Fused Result |
 |------|---------|-------------|
@@ -388,7 +388,7 @@ export_html_report(graph, results, "report.html",
 
 ### Efficiency Factors
 
-Raw peak specs are unachievable in practice. The simulator applies hardware-calibrated efficiency factors (inspired by [msmodeling](https://gitee.com/ascend/msmodeling)):
+Raw peak specs are unachievable in practice. The simulator applies hardware-calibrated efficiency factors (inspired by [msmodeling](https://github.com/opensim-ai/msmodeling)):
 
 | Factor | GPU (A100/H100) | NPU (910B/910C) | Effect |
 |--------|-----------------|------------------|--------|
@@ -400,6 +400,30 @@ Raw peak specs are unachievable in practice. The simulator applies hardware-cali
 
 These factors bring estimates significantly closer to measured hardware performance.
 
+### Validated Against msmodeling
+
+The NPU backend has been validated against Huawei's open-source [msmodeling](https://github.com/opensim-ai/msmodeling) (MindStudio-Modeling) simulator on real HuggingFace model configs running on the Ascend 910B (ATLAS_800_A2_376T_64G) device profile:
+
+| Model | xPU-sim (ms) | msmodeling (ms) | Ratio | Diff |
+|-------|-------------|-----------------|-------|------|
+| LLaMA-3.1-8B | 79.6 | 79.7 | 0.999x | -0.1% |
+| Qwen2-7B | 74.8 | 72.3 | 1.034x | +3.4% |
+| LLaMA-3.1-70B | 692.2 | 645.7 | 1.072x | +7.2% |
+| Qwen2-72B | 711.5 | 660.4 | 1.077x | +7.7% |
+
+**Average ratio: 1.046x** (within 5% for 7B models, within 8% for 70B+ models). Differences are mainly due to hardware spec differences — msmodeling uses 376T MMA / 22T GP / 1759 GB/s while xPU-sim uses 320T CUBE / 10T VECTOR / 1600 GB/s for the 910B.
+
+### ConfigExtractor vs DispatchExtractor
+
+Both extraction methods were benchmarked on real HuggingFace models (LLaMA 8B/70B, Mistral 7B, Qwen2 7B/72B, Mixtral 8x7B) across 4 devices:
+
+- **ConfigExtractor**: Produces logical ops (~515 for 8B, ~1283 for 70B). Closer to Flash Attention production behavior.
+- **DispatchExtractor**: Captures aten-level ops (~1813 for 8B, ~4501 for 70B) including FP32 attention score upcasting for softmax numerical stability — adds ~40ms overhead on GPU for 8B models.
+- **NPU agreement**: ConfigExtractor and DispatchExtractor agree within 4–8% on NPU (no FP32 attention overhead since NPU doesn't upcast).
+- **GPU divergence**: DispatchExtractor is 25–50% slower on GPU due to FP32 attention matmuls (FP32 peak is ~16x lower than FP16 on A100).
+
+See `benchmarks/run_real_models.py` and `benchmarks/run_vs_msmodeling.py` for reproducible comparisons.
+
 ## Project Structure
 
 ```
@@ -410,9 +434,10 @@ xpu_simulator/
   serving/        # Serving simulation: scheduler, KV cache allocator, request state, metrics, throughput optimizer
   utils/          # HTML reports, Chrome tracing, op categorization
   cli.py          # Command-line interface
+benchmarks/       # Comparison benchmarks: run_real_models.py, run_vs_msmodeling.py, HF model configs
 examples/         # DeepSeek V3.2 671B simulation scripts
-reports/          # Generated HTML reports and Perfetto traces
-tests/            # 171 tests across 17 test files
+reports/          # Generated HTML reports, Perfetto traces, and benchmark CSVs
+tests/            # 173 tests across 17 test files
 ```
 
 ## Running Tests

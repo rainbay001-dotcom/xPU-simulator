@@ -12,7 +12,7 @@ xPU-Simulator is an analytical performance simulator for LLM inference on hetero
 |--------|-------|
 | Source lines | ~8,000 (library) + ~3,900 (tests) + ~1,100 (examples) |
 | Python files | 45 (library) + 17 (tests) + 3 (examples) |
-| Test count | 161 tests, all passing |
+| Test count | 173 tests, all passing |
 | Supported hardware | 4 devices (A100, H100, 910B, 910C) |
 | Supported architectures | 8 LLM families via ConfigExtractor |
 | Graph extractors | 7 methods |
@@ -121,7 +121,7 @@ The graph is immutable-by-convention after construction. Transforms (fusion, TP 
 CostModel (ABC)
 ├── RooflineCostModel          # basic max(compute_time, memory_time)
 ├── GPUCostModel               # Tensor Core vs CUDA Core, kernel launch overhead
-├── NPUCostModel               # CA-style tiled pipeline (MTE→CUBE→VECTOR)
+├── NPUCostModel               # Hybrid roofline (chip-level cube peak + aggregate BW)
 ├── CalibratedCostModel        # measured latency on hit, analytical fallback
 └── CommAwareCostModel          # wraps base model + handles collective ops
 ```
@@ -146,10 +146,12 @@ class OpCost:
 - L2 cache efficiency factor
 
 **NPU cost model** adds:
-- Tiled pipeline simulation: MTE (memory transfer) → CUBE (matrix compute) → VECTOR (element-wise)
-- Double-buffering (pipeline depth = 2)
-- L2 reuse within tiles
-- Tile alignment to hardware constraints (e.g., 16-byte alignment)
+- Hybrid roofline for CUBE ops: `max(compute_time, memory_time)` at chip level
+  - Compute bound: `flops / (chip_cube_peak × utilization × efficiency)`
+  - Memory bound: `bytes / (aggregate_bandwidth × efficiency)`
+- Tile-based utilization estimation (alignment to CUBE tile constraints)
+- Format conversion overhead (ND → NZ) for non-native tensor layouts
+- Pipeline startup/drain overhead (910B: 1.0 + 0.5 µs, 910C: 0.8 + 0.4 µs)
 - Multi-core parallelism across AI cores
 
 #### 3.1.4 Performance Evaluator (`evaluator.py`)
@@ -209,7 +211,7 @@ FusionPass
 | `DISPATCH_FUSION_RULES` | DispatchExtractor graphs | RMSNorm, RoPE, ResidualAddRMSNorm, DispatchFlashAttention, GroupedMatMulSwiGLU, SwiGLU, MatMulEpilogue, ElementwiseChain |
 | `DISPATCH_NPU_FUSION_RULES` | DispatchExtractor + NPU | Above + NPUFormatFusion |
 
-**Dispatch-level fusion rules** (inspired by Huawei msmodeling):
+**Dispatch-level fusion rules** (inspired by [msmodeling](https://github.com/opensim-ai/msmodeling)):
 
 | Rule | Pattern | Result | DeepSeek V3 Matches |
 |------|---------|--------|---------------------|
@@ -369,31 +371,32 @@ ASCEND_910B = AscendSpec(
 )
 ```
 
-**NPUCostModel** implements a CA-style (Cost Analysis) tiled pipeline model:
+**NPUCostModel** implements a hybrid roofline model:
 
 ```
 For MATMUL [M, K] x [K, N]:
-  1. Compute tiling: tile_m, tile_k, tile_n (aligned to hardware constraints)
-  2. For each tile:
-     MTE_in:  load A_tile + B_tile from GM/L2
-     CUBE:    tile_m * tile_k * tile_n * 2 FLOPs at per-core peak
-     MTE_out: write C_tile to GM
-  3. Double-buffered pipeline: overlap MTE_in[i+1] with CUBE[i]
-  4. Total = max(sum_MTE, sum_CUBE) across all tiles, divided by num_cores
+  1. Compute bound: flops / (chip_cube_peak × utilization × cube_efficiency)
+     - utilization derived from tile alignment to hardware constraints
+     - chip_cube_peak is the aggregate peak across all AI cores
+  2. Memory bound: total_bytes / (aggregate_GM_bandwidth × memory_efficiency)
+     - total_bytes = input_bytes + output_bytes (chip-level, not per-tile)
+  3. Latency = max(compute_time, memory_time) + pipeline_overhead + format_conversion
 
 For elementwise/reduction ops:
-  1. Vector tiling: process in chunks fitting UB
-  2. MTE_in → VECTOR → MTE_out pipeline
-  3. Parallelized across cores
+  1. VECTOR pipeline: flops / (vector_peak × vector_efficiency)
+  2. Memory: bytes / (GM_bandwidth × memory_efficiency)
+  3. Same roofline: max(compute, memory) + static overhead
 ```
 
-**Efficiency factors** (inspired by msmodeling) are applied to raw hardware peaks:
+**Efficiency factors** (inspired by [msmodeling](https://github.com/opensim-ai/msmodeling)):
 - CUBE compute: 0.70 (FP16/BF16), 0.65 (INT8/FP8), 0.60 (FP32)
 - VECTOR compute: 0.80
-- MTE bandwidth (memory): 0.60 — applied to both GM→UB and L2→UB transfers
+- Memory bandwidth: 0.60 — applied to GM reads/writes
+- Pipeline overhead: 910B: 1.0 µs startup + 0.5 µs drain; 910C: 0.8 + 0.4 µs
+- Format conversion: ~0.15x of CUBE time (ND→NZ tensor format)
 - Static overhead: 5 µs per CUBE op, 2 µs per VECTOR op (kernel dispatch, synchronization)
 
-These bring estimates significantly closer to measured hardware performance.
+**Validated against msmodeling**: Average ratio 1.046x across LLaMA-8B/70B and Qwen2-7B/72B on Ascend 910B.
 
 ---
 
@@ -599,29 +602,31 @@ utilization = min(compute_time, memory_time) / max(compute_time, memory_time)
 
 The crossover point (ridge point) is at arithmetic intensity = `peak_flops / peak_bandwidth`. Operations above this intensity are compute-bound; below are memory-bound.
 
-### 6.2 NPU Tiled Pipeline
+### 6.2 NPU Hybrid Roofline
 
 ```
 For matmul C[M,N] = A[M,K] × B[K,N]:
 
-1. Tiling: choose tile_m, tile_k, tile_n to fit in L1
-   - tile_m aligned to 16 (CUBE constraint)
-   - tile_k aligned to 32 (CUBE K-dimension)
-   - tile_n aligned to 16
+1. Compute bound:
+   flops = 2 * M * K * N
+   utilization = _cube_utilization(op, tile_size)  # tile alignment penalty
+   compute_us = flops / (chip_cube_peak * utilization * cube_efficiency)
 
-2. Per-tile costs:
-   MTE_load  = (tile_m*tile_k + tile_k*tile_n) * dtype_bytes / GM_bandwidth
-   CUBE_time = 2 * tile_m*tile_k*tile_n / per_core_cube_peak
-   MTE_store = tile_m*tile_n * dtype_bytes / GM_bandwidth
+2. Memory bound:
+   bytes = (M*K + K*N) * dtype_bytes + M*N * dtype_bytes  # inputs + output
+   memory_us = bytes / (GM_bandwidth * memory_efficiency)
 
-3. L2 reuse: if tile fits in L2, subsequent loads use L2 bandwidth (4x faster)
+3. Pipeline overhead:
+   pipeline_us = startup_us + drain_us  (910B: 1.0+0.5, 910C: 0.8+0.4)
 
-4. Double buffering: pipeline MTE[i+1] with CUBE[i]
-   total = max(sum_MTE, sum_CUBE) per core
+4. Format conversion:
+   format_us = ~0.15 * compute_us  (ND→NZ tensor format for CUBE)
 
-5. Multi-core: divide tiles across num_cores
-   final = total / num_cores
+5. Total:
+   latency = max(compute_us, memory_us) + pipeline_us + format_us + static_us
 ```
+
+The hybrid roofline uses chip-level aggregate bandwidth and peak FLOPS, avoiding per-tile data amplification that would overcount memory traffic. Tile alignment penalties are captured via utilization.
 
 ### 6.3 ASAP Overlap Scheduling
 
@@ -708,7 +713,7 @@ MY_RULES = DISPATCH_FUSION_RULES + [MyFusion()]
 | Dispatch extraction | test_dispatch_extractor.py | 11 | MLP, transformer, shapes, dtypes, FLOPs |
 | Fusion (config) | test_fusion.py | 9 | FlashAttention, SwiGLU, epilogue, NPU format |
 | Fusion (dispatch) | test_dispatch_fusion.py | 14 | RMSNorm, FlashAttn, SwiGLU, idempotency |
-| NPU CA model | test_npu_ca_model.py | 8 | Tiling, pipeline, L2 reuse, multi-core |
+| NPU CA model | test_npu_ca_model.py | 8 | Hybrid roofline, tiling, utilization, multi-core |
 | Quantization | test_quantization.py | 15 | INT4/INT8/FP8, GPTQ/AWQ parsing |
 | Parallelism | test_parallelism.py | 11 | TP/EP, comm costs, graph structure |
 | Decode | test_decode.py | 8 | KV cache, decode shapes, TTFT/TPOT |
@@ -752,7 +757,48 @@ MY_RULES = DISPATCH_FUSION_RULES + [MyFusion()]
 
 ---
 
-## 10. Limitations and Future Work
+## 10. Validation Against msmodeling
+
+The NPU backend has been validated against Huawei's open-source [msmodeling](https://github.com/opensim-ai/msmodeling) (MindStudio-Modeling) simulator. Both tools were run on the same HuggingFace model configs targeting the Ascend 910B.
+
+### 10.1 Direct Comparison (NPU)
+
+| Model | xPU-sim (ms) | msmodeling (ms) | Ratio | Notes |
+|-------|-------------|-----------------|-------|-------|
+| LLaMA-3.1-8B | 79.6 | 79.7 | 0.999x | Near-perfect match |
+| Qwen2-7B | 74.8 | 72.3 | 1.034x | Within 3.4% |
+| LLaMA-3.1-70B | 692.2 | 645.7 | 1.072x | Within 7.2% |
+| Qwen2-72B | 711.5 | 660.4 | 1.077x | Within 7.7% |
+
+**Average ratio: 1.046x.** Remaining differences are attributable to hardware spec differences:
+- msmodeling uses 376T MMA / 22T GP / 1759 GB/s (ATLAS_800_A2_376T_64G profile)
+- xPU-sim uses 320T CUBE / 10T VECTOR / 1600 GB/s (our 910B profile)
+
+### 10.2 ConfigExtractor vs DispatchExtractor
+
+Both extractors were benchmarked on 6 models across 4 devices (batch=1, seq=1024, FP16, prefill):
+
+| Finding | Detail |
+|---------|--------|
+| **MATMUL count agreement** | ConfigExtractor and DispatchExtractor produce nearly identical MATMUL counts (e.g., 289 vs 290 for 8B models) |
+| **FP32 attention overhead** | DispatchExtractor captures HuggingFace's FP32 upcasting in attention scores (for softmax numerical stability). This adds ~40ms on A100 for 8B models |
+| **GPU divergence** | DispatchExtractor is 25–50% slower than ConfigExtractor on GPU due to FP32 attention matmuls (A100 FP32 peak is 19.5T vs FP16 312T) |
+| **NPU agreement** | Both extractors agree within 4–8% on NPU (NPU CUBE doesn't model FP32 attention overhead) |
+| **MoE limitation** | DispatchExtractor captures fewer MoE MATMULs for Mixtral due to dynamic expert routing on meta device |
+
+### 10.3 Benchmark Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `benchmarks/run_benchmark.py` | Multi-device benchmark with analytical msmodeling formula comparison |
+| `benchmarks/run_real_models.py` | ConfigExtractor vs DispatchExtractor on 6 real HF models × 4 devices |
+| `benchmarks/run_vs_msmodeling.py` | Direct comparison running both xPU-sim and real msmodeling tool |
+
+Results are saved to `reports/benchmark_results.csv`, `reports/real_model_benchmark.csv`, and `reports/vs_msmodeling.csv`.
+
+---
+
+## 11. Limitations and Future Work
 
 ### Current Limitations
 
@@ -773,7 +819,7 @@ MY_RULES = DISPATCH_FUSION_RULES + [MyFusion()]
 
 ---
 
-## 11. Dependencies
+## 12. Dependencies
 
 | Package | Version | Purpose |
 |---------|---------|---------|
@@ -786,7 +832,7 @@ Optional: `onnx` (for ONNXExtractor), `matplotlib` (for roofline plots).
 
 ---
 
-## 12. File Reference
+## 13. File Reference
 
 ```
 xpu_simulator/
@@ -836,8 +882,13 @@ xpu_simulator/
     ├── visualize.py                # SVG architecture diagrams
     ├── profiling.py                # Profiling utilities
     └── roofline.py                 # Roofline chart generation
-reports/                            # Generated HTML reports and Perfetto traces
+reports/                            # Generated HTML reports, Perfetto traces, benchmark CSVs
+benchmarks/                         # Comparison benchmarks and HF model configs
+├── run_benchmark.py                # Multi-device benchmark with msmodeling formula comparison
+├── run_real_models.py              # ConfigExtractor vs DispatchExtractor on real HF models
+├── run_vs_msmodeling.py            # Direct comparison against real msmodeling tool
+└── hf_models/                      # Real HuggingFace config.json files (LLaMA, Qwen2, etc.)
 examples/                           # Example simulation scripts
 docs/                               # System design documentation
-tests/                              # 171 tests across 17 test files
+tests/                              # 173 tests across 17 test files
 ```
