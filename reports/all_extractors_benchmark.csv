@@ -1,0 +1,141 @@
+model,extractor,device,nodes_before,nodes_after,extract_time_s,latency_ms,flops_T,compute_bound,memory_bound,status,error
+LLaMA-3.1-8B,ConfigExtractor,A100,515,419,0.0,77.0,15.93,257,162,OK,
+LLaMA-3.1-8B,ConfigExtractor,H100,515,419,0.0,26.0,15.93,257,162,OK,
+LLaMA-3.1-8B,ConfigExtractor,910B,515,419,0.0,79.6,15.93,257,162,OK,
+LLaMA-3.1-8B,ConfigExtractor,910C,515,419,0.0,64.5,15.93,257,162,OK,
+LLaMA-3.1-8B,DispatchExtractor,A100,1813,910,3.47,115.6,15.93,257,653,OK,
+LLaMA-3.1-8B,DispatchExtractor,H100,1813,910,3.47,36.3,15.93,257,653,OK,
+LLaMA-3.1-8B,DispatchExtractor,910B,1813,910,3.47,79.2,15.93,257,653,OK,
+LLaMA-3.1-8B,DispatchExtractor,910C,1813,910,3.47,63.9,15.93,257,653,OK,
+LLaMA-3.1-8B,Dispatch(2-layer),A100,133,70,0.63,11.9,2.0,17,53,OK,
+LLaMA-3.1-8B,Dispatch(2-layer),H100,133,70,0.63,3.8,2.0,17,53,OK,
+LLaMA-3.1-8B,Dispatch(2-layer),910B,133,70,0.63,9.8,2.0,17,53,OK,
+LLaMA-3.1-8B,Dispatch(2-layer),910C,133,70,0.63,7.9,2.0,17,53,OK,
+LLaMA-3.1-8B,FX(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+LLaMA-3.1-8B,FX(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+LLaMA-3.1-8B,FX(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+LLaMA-3.1-8B,FX(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+LLaMA-3.1-8B,Export(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+LLaMA-3.1-8B,Export(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+LLaMA-3.1-8B,Export(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+LLaMA-3.1-8B,Export(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+LLaMA-3.1-70B,ConfigExtractor,A100,1283,1043,0.0,679.1,145.13,641,402,OK,
+LLaMA-3.1-70B,ConfigExtractor,H100,1283,1043,0.0,219.9,145.13,641,402,OK,
+LLaMA-3.1-70B,ConfigExtractor,910B,1283,1043,0.0,692.2,145.13,641,402,OK,
+LLaMA-3.1-70B,ConfigExtractor,910C,1283,1043,0.0,557.8,145.13,641,402,OK,
+LLaMA-3.1-70B,DispatchExtractor,A100,4501,2254,1.49,874.5,145.14,641,1613,OK,
+LLaMA-3.1-70B,DispatchExtractor,H100,4501,2254,1.49,272.8,145.14,641,1613,OK,
+LLaMA-3.1-70B,DispatchExtractor,910B,4501,2254,1.49,693.8,145.14,641,1613,OK,
+LLaMA-3.1-70B,DispatchExtractor,910C,4501,2254,1.49,557.9,145.14,641,1613,OK,
+LLaMA-3.1-70B,Dispatch(2-layer),A100,133,70,0.6,31.6,5.73,17,53,OK,
+LLaMA-3.1-70B,Dispatch(2-layer),H100,133,70,0.6,10.0,5.73,17,53,OK,
+LLaMA-3.1-70B,Dispatch(2-layer),910B,133,70,0.6,27.3,5.73,17,53,OK,
+LLaMA-3.1-70B,Dispatch(2-layer),910C,133,70,0.6,21.9,5.73,17,53,OK,
+LLaMA-3.1-70B,FX(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+LLaMA-3.1-70B,FX(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+LLaMA-3.1-70B,FX(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+LLaMA-3.1-70B,FX(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+LLaMA-3.1-70B,Export(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+LLaMA-3.1-70B,Export(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+LLaMA-3.1-70B,Export(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+LLaMA-3.1-70B,Export(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Mistral-7B,ConfigExtractor,A100,515,419,0.0,72.8,15.13,257,162,OK,
+Mistral-7B,ConfigExtractor,H100,515,419,0.0,24.6,15.13,257,162,OK,
+Mistral-7B,ConfigExtractor,910B,515,419,0.0,75.1,15.13,257,162,OK,
+Mistral-7B,ConfigExtractor,910C,515,419,0.0,60.9,15.13,257,162,OK,
+Mistral-7B,DispatchExtractor,A100,1877,974,1.73,111.9,15.12,257,717,OK,
+Mistral-7B,DispatchExtractor,H100,1877,974,1.73,35.1,15.12,257,717,OK,
+Mistral-7B,DispatchExtractor,910B,1877,974,1.73,75.5,15.12,257,717,OK,
+Mistral-7B,DispatchExtractor,910C,1877,974,1.73,60.9,15.12,257,717,OK,
+Mistral-7B,Dispatch(2-layer),A100,137,74,0.54,8.2,1.2,17,57,OK,
+Mistral-7B,Dispatch(2-layer),H100,137,74,0.54,2.6,1.2,17,57,OK,
+Mistral-7B,Dispatch(2-layer),910B,137,74,0.54,6.0,1.2,17,57,OK,
+Mistral-7B,Dispatch(2-layer),910C,137,74,0.54,4.9,1.2,17,57,OK,
+Mistral-7B,FX(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Mistral-7B,FX(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Mistral-7B,FX(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Mistral-7B,FX(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Mistral-7B,Export(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Mistral-7B,Export(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Mistral-7B,Export(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Mistral-7B,Export(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Qwen2-7B,ConfigExtractor,A100,451,367,0.0,72.4,14.91,225,142,OK,
+Qwen2-7B,ConfigExtractor,H100,451,367,0.0,24.1,14.91,225,142,OK,
+Qwen2-7B,ConfigExtractor,910B,451,367,0.0,74.8,14.91,225,142,OK,
+Qwen2-7B,ConfigExtractor,910C,451,367,0.0,60.7,14.91,225,142,OK,
+Qwen2-7B,DispatchExtractor,A100,1589,798,1.51,101.1,14.91,225,573,OK,
+Qwen2-7B,DispatchExtractor,H100,1589,798,1.51,31.2,14.91,225,573,OK,
+Qwen2-7B,DispatchExtractor,910B,1589,798,1.51,73.4,14.91,225,573,OK,
+Qwen2-7B,DispatchExtractor,910C,1589,798,1.51,59.2,14.91,225,573,OK,
+Qwen2-7B,Dispatch(2-layer),A100,133,70,0.6,12.0,2.1,17,53,OK,
+Qwen2-7B,Dispatch(2-layer),H100,133,70,0.6,3.7,2.1,17,53,OK,
+Qwen2-7B,Dispatch(2-layer),910B,133,70,0.6,10.2,2.1,17,53,OK,
+Qwen2-7B,Dispatch(2-layer),910C,133,70,0.6,8.2,2.1,17,53,OK,
+Qwen2-7B,FX(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Qwen2-7B,FX(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Qwen2-7B,FX(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Qwen2-7B,FX(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Qwen2-7B,Export(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Qwen2-7B,Export(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Qwen2-7B,Export(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Qwen2-7B,Export(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Qwen2-72B,ConfigExtractor,A100,1283,1043,0.07,698.0,149.14,641,402,OK,
+Qwen2-72B,ConfigExtractor,H100,1283,1043,0.07,226.0,149.14,641,402,OK,
+Qwen2-72B,ConfigExtractor,910B,1283,1043,0.07,711.5,149.14,641,402,OK,
+Qwen2-72B,ConfigExtractor,910C,1283,1043,0.07,573.3,149.14,641,402,OK,
+Qwen2-72B,DispatchExtractor,A100,4501,2254,1.56,892.9,149.15,641,1613,OK,
+Qwen2-72B,DispatchExtractor,H100,4501,2254,1.56,278.6,149.15,641,1613,OK,
+Qwen2-72B,DispatchExtractor,910B,4501,2254,1.56,712.3,149.15,641,1613,OK,
+Qwen2-72B,DispatchExtractor,910C,4501,2254,1.56,572.8,149.15,641,1613,OK,
+Qwen2-72B,Dispatch(2-layer),A100,133,70,0.65,33.9,6.22,17,53,OK,
+Qwen2-72B,Dispatch(2-layer),H100,133,70,0.65,10.7,6.22,17,53,OK,
+Qwen2-72B,Dispatch(2-layer),910B,133,70,0.65,29.5,6.22,17,53,OK,
+Qwen2-72B,Dispatch(2-layer),910C,133,70,0.65,23.7,6.22,17,53,OK,
+Qwen2-72B,FX(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Qwen2-72B,FX(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Qwen2-72B,FX(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Qwen2-72B,FX(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Qwen2-72B,Export(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Qwen2-72B,Export(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Qwen2-72B,Export(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Qwen2-72B,Export(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Mixtral-8x7B,ConfigExtractor,A100,579,483,0.01,127.7,26.67,257,226,OK,
+Mixtral-8x7B,ConfigExtractor,H100,579,483,0.01,42.6,26.67,257,226,OK,
+Mixtral-8x7B,ConfigExtractor,910B,579,483,0.01,129.5,26.67,257,226,OK,
+Mixtral-8x7B,ConfigExtractor,910C,579,483,0.01,104.7,26.67,257,226,OK,
+Mixtral-8x7B,DispatchExtractor,A100,2325,1358,1.74,164.6,26.67,225,1133,OK,
+Mixtral-8x7B,DispatchExtractor,H100,2325,1358,1.74,18.0,26.67,161,1197,OK,
+Mixtral-8x7B,DispatchExtractor,910B,2325,1358,1.74,99.8,26.67,193,1165,OK,
+Mixtral-8x7B,DispatchExtractor,910C,2325,1358,1.74,17.3,26.67,161,1197,OK,
+Mixtral-8x7B,Dispatch(2-layer),A100,165,98,0.62,11.6,1.92,15,83,OK,
+Mixtral-8x7B,Dispatch(2-layer),H100,165,98,0.62,3.8,1.92,11,87,OK,
+Mixtral-8x7B,Dispatch(2-layer),910B,165,98,0.62,10.9,1.92,13,85,OK,
+Mixtral-8x7B,Dispatch(2-layer),910C,165,98,0.62,7.3,1.92,11,87,OK,
+Mixtral-8x7B,FX(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Mixtral-8x7B,FX(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Mixtral-8x7B,FX(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Mixtral-8x7B,FX(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,code: co_varnames is too small
+Mixtral-8x7B,Export(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Mixtral-8x7B,Export(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Mixtral-8x7B,Export(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+Mixtral-8x7B,Export(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,"Found <class 'transformers.cache_utils.DynamicCache'> in output, which is not a "
+DeepSeek-V3,ConfigExtractor,A100,1626,1327,0.0,377.5,80.3,782,545,OK,
+DeepSeek-V3,ConfigExtractor,H100,1626,1327,0.0,72.3,80.3,721,606,OK,
+DeepSeek-V3,ConfigExtractor,910B,1626,1327,0.0,222.6,80.3,663,664,OK,
+DeepSeek-V3,ConfigExtractor,910C,1626,1327,0.0,180.0,80.3,663,664,OK,
+DeepSeek-V3,DispatchExtractor,A100,6513,3425,1.64,588.8,80.32,608,2817,OK,
+DeepSeek-V3,DispatchExtractor,H100,6513,3425,1.64,177.4,80.32,608,2817,OK,
+DeepSeek-V3,DispatchExtractor,910B,6513,3425,1.64,214.7,80.32,550,2875,OK,
+DeepSeek-V3,DispatchExtractor,910C,6513,3425,1.64,173.1,80.32,550,2875,OK,
+DeepSeek-V3,Dispatch(2-layer),A100,173,84,0.83,34.0,4.46,19,65,OK,
+DeepSeek-V3,Dispatch(2-layer),H100,173,84,0.83,10.6,4.46,19,65,OK,
+DeepSeek-V3,Dispatch(2-layer),910B,173,84,0.83,22.3,4.46,19,65,OK,
+DeepSeek-V3,Dispatch(2-layer),910C,173,84,0.83,18.0,4.46,19,65,OK,
+DeepSeek-V3,FX(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,'DeepseekV3Config' object has no attribute 'qk_head_dim'
+DeepSeek-V3,FX(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,'DeepseekV3Config' object has no attribute 'qk_head_dim'
+DeepSeek-V3,FX(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,'DeepseekV3Config' object has no attribute 'qk_head_dim'
+DeepSeek-V3,FX(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,'DeepseekV3Config' object has no attribute 'qk_head_dim'
+DeepSeek-V3,Export(2-layer),A100,0,0,0,0,0,0,0,EXTRACT_ERROR,'DeepseekV3Config' object has no attribute 'qk_head_dim'
+DeepSeek-V3,Export(2-layer),H100,0,0,0,0,0,0,0,EXTRACT_ERROR,'DeepseekV3Config' object has no attribute 'qk_head_dim'
+DeepSeek-V3,Export(2-layer),910B,0,0,0,0,0,0,0,EXTRACT_ERROR,'DeepseekV3Config' object has no attribute 'qk_head_dim'
+DeepSeek-V3,Export(2-layer),910C,0,0,0,0,0,0,0,EXTRACT_ERROR,'DeepseekV3Config' object has no attribute 'qk_head_dim'
