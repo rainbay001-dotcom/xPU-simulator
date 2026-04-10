@@ -23,6 +23,7 @@ class GPUSpec(HardwareSpec):
         cuda_core_flops_map: dict[str, float] | None = None,
         efficiency_factors: dict[str, float] | None = None,
         interconnect: InterconnectSpec | None = None,
+        cta_tile: tuple[int, int] = (128, 128),
     ):
         self._name = name
         self.interconnect = interconnect
@@ -31,6 +32,7 @@ class GPUSpec(HardwareSpec):
         self._peak_flops = peak_flops_map
         self._cuda_core_flops = cuda_core_flops_map or {}
         self.efficiency_factors = efficiency_factors or {}
+        self.cta_tile = cta_tile  # (tile_M, tile_N) for GEMM CTA partitioning
         self._memory_hierarchy = [
             MemLevel("L1", l1_size_kb * 1024, l1_bw_GBs),
             MemLevel("L2", l2_size_mb * 1024 * 1024, l2_bw_GBs),

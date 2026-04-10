@@ -152,12 +152,67 @@ def test_efficiency_default_is_one():
 
 
 def test_gpu_matmul_efficiency_affects_compute_us():
-    """Compute_us with 0.70 efficiency should be ~1.43x the raw compute time."""
+    """Compute_us with efficiency and wave quantization applied."""
     op = _matmul_op(M=4096, K=4096, N=4096)
     cost = GPUCostModel(A100_80GB).estimate(op)
     flops = op.flops
     raw_peak = A100_80GB.peak_flops_for("fp16")
-    raw_compute_us = flops / raw_peak * 1e6
-    effective_compute_us = flops / (raw_peak * 0.70) * 1e6
-    # GPU cost model's compute_us should be close to effective (with efficiency)
+    # For 4096x4096: ceil(4096/128)*ceil(4096/128) = 32*32 = 1024 tiles on 108 SMs
+    # num_waves = ceil(1024/108) = 10, wave_eff = 1024/(10*108) = 0.948
+    import math
+    tile_M, tile_N = A100_80GB.cta_tile
+    num_tiles = math.ceil(4096 / tile_M) * math.ceil(4096 / tile_N)
+    num_waves = math.ceil(num_tiles / A100_80GB.sm_count)
+    wave_eff = num_tiles / (num_waves * A100_80GB.sm_count)
+    effective_compute_us = flops / (raw_peak * 0.70 * wave_eff) * 1e6
     assert abs(cost.compute_us - effective_compute_us) / effective_compute_us < 0.01
+
+
+def test_wave_quantization_perfect_fit():
+    """When tiles exactly fill SMs, wave efficiency should be 1.0."""
+    # 108 SMs on A100, tile 128x128: M=128*108=13824, N=128 → 108 tiles = 1 wave
+    # But that's a weird shape. Use: M=128*12=1536, N=128*9=1152 → 12*9=108 tiles
+    op = _matmul_op(M=1536, K=1024, N=1152)
+    model = GPUCostModel(A100_80GB)
+    wave_eff = model._wave_efficiency(op)
+    assert wave_eff == 1.0
+
+
+def test_wave_quantization_partial_wave():
+    """Partial last wave should reduce efficiency."""
+    # M=128, N=128 → 1 tile on 108 SMs → wave_eff = 1/108 ≈ 0.009
+    op = _matmul_op(M=128, K=1024, N=128)
+    model = GPUCostModel(A100_80GB)
+    wave_eff = model._wave_efficiency(op)
+    assert wave_eff < 0.02  # 1 tile / (1 wave * 108 SMs)
+
+    # M=256, N=256 → ceil(256/128)*ceil(256/128) = 4 tiles → wave_eff = 4/108 ≈ 0.037
+    op2 = _matmul_op(M=256, K=1024, N=256)
+    wave_eff2 = model._wave_efficiency(op2)
+    assert 0.03 < wave_eff2 < 0.04
+
+
+def test_wave_quantization_increases_latency():
+    """Small matmul with bad wave utilization should be slower per-FLOP."""
+    model = GPUCostModel(A100_80GB)
+    # Large matmul: good wave efficiency
+    big = _matmul_op(M=4096, K=4096, N=4096)
+    big_cost = model.estimate(big)
+    # Small matmul: terrible wave efficiency (1 tile on 108 SMs)
+    small = _matmul_op(M=128, K=4096, N=128)
+    small_cost = model.estimate(small)
+    # Per-FLOP cost should be much higher for the small matmul
+    big_us_per_flop = big_cost.compute_us / big.flops
+    small_us_per_flop = small_cost.compute_us / small.flops
+    assert small_us_per_flop > big_us_per_flop * 5  # at least 5x worse
+
+
+def test_h100_wave_quantization_different_from_a100():
+    """H100 has 132 SMs vs A100's 108, so wave efficiency differs."""
+    op = _matmul_op(M=1024, K=4096, N=4096)
+    a100_eff = GPUCostModel(A100_80GB)._wave_efficiency(op)
+    h100_eff = GPUCostModel(H100_80GB)._wave_efficiency(op)
+    # ceil(1024/128)*ceil(4096/128) = 8*32 = 256 tiles
+    # A100: ceil(256/108)=3 waves, eff=256/324=0.790
+    # H100: ceil(256/132)=2 waves, eff=256/264=0.970
+    assert h100_eff > a100_eff  # H100 has better wave utilization here
