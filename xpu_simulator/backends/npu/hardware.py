@@ -149,6 +149,9 @@ ASCEND_910B = AscendSpec(
         "memory": 0.60,
         "static_cube_us": 5.0,    # per-CUBE-op overhead (dispatch, sync, etc.)
         "static_vector_us": 1.7,  # per-VECTOR-op overhead (CA sim: ~3000 cycle floor ≈ 1.67us @ 1.8GHz)
+        "static_fa_us": 18.0,     # FlashAttentionScore MIX_AIC floor (msprof Qwen3 ~25 µs/call)
+        "static_plumbing_us": 3.0,  # ConcatD/Slice launch cost (msprof Qwen3 3.8 µs/call)
+        "host_dispatch_us": 1.5,   # per-op host-side launch floor (torch_npu/ACL)
     },
     interconnect=InterconnectSpec("HCCS", 392, 1.0),
 )
@@ -186,6 +189,9 @@ ASCEND_910C = AscendSpec(
         "memory": 0.71,          # calibrated from SILU single-pass profiling
         "static_cube_us": 5.0,
         "static_vector_us": 2.0,
+        "static_fa_us": 20.0,      # FlashAttentionScore MIX_AIC floor (msprof Qwen3 ~25 µs/call)
+        "static_plumbing_us": 3.5,  # ConcatD/Slice launch cost (msprof Qwen3 3.8 µs/call)
+        "host_dispatch_us": 1.8,    # per-op host-side launch floor (torch_npu/ACL)
     },
     interconnect=InterconnectSpec("HCCS", 600, 1.0),
 )

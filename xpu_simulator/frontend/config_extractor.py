@@ -216,7 +216,9 @@ class ConfigExtractor(GraphExtractor):
                 graph_name: Optional[str] = None,
                 parallel_config: Optional[ParallelConfig] = None,
                 phase: str = "prefill",
-                kv_seq_len: int = 0) -> ComputeGraph:
+                kv_seq_len: int = 0,
+                fuse_attention: bool = False,
+                model_kv_cache: bool = False) -> ComputeGraph:
         """Build a compute graph from a HuggingFace model config.
 
         Args:
@@ -254,7 +256,9 @@ class ConfigExtractor(GraphExtractor):
         name = graph_name or f"{cfg.model_type}-{cfg.hidden_size}"
         builder = GraphBuilder(name, self.dtype, quant=cfg.quant_config,
                                parallel=parallel_config,
-                               phase=phase_enum, kv_seq_len=effective_kv)
+                               phase=phase_enum, kv_seq_len=effective_kv,
+                               fuse_attention=fuse_attention,
+                               model_kv_cache=model_kv_cache)
         tokens = batch_size * effective_seq
 
         # Embedding
@@ -294,7 +298,7 @@ class ConfigExtractor(GraphExtractor):
 # ------------------------------------------------------------------ #
 
 # Standard transformer architectures
-for _model_type in ("llama", "mistral", "qwen2", "mixtral",
+for _model_type in ("llama", "mistral", "qwen2", "qwen3", "mixtral",
                      "gpt2", "falcon", "gpt_neox"):
     ConfigExtractor.register_handler(_model_type, StandardTransformerHandler)
 

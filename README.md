@@ -398,6 +398,9 @@ Raw peak specs are unachievable in practice. The simulator applies hardware-cali
 | Static (matmul) | 5 µs/op | 5 µs/op | 5 µs/op | Kernel dispatch, sync |
 | Static (vector floor) | 2 µs/op | 1.7 µs/op | 2 µs/op | CA sim: ~3000 cycle floor |
 | LayerNorm / Softmax extra | — | +2 / +3 µs | +2 / +3 µs | Reduction-tree init |
+| Static (FA kernel floor) | — | 18 µs/op | 20 µs/op | FlashAttentionScore MIX_AIC launch |
+| Static (plumbing floor) | — | 3.0 µs/op | 3.5 µs/op | ConcatD/Slice/Transpose/Triu launch |
+| Host dispatch (warm only) | — | 1.5 µs/op | 1.8 µs/op | torch_npu/ACL launch (per op) |
 
 The 910B memory-bandwidth factor of 0.60 is independently corroborated by the CA simulator: an ADD 2048×4096 kernel on cold HBM completes at 940 GB/s effective BW, exactly 0.59 × 1600 GB/s peak.
 
@@ -440,6 +443,23 @@ and pipeline visualization.
 The 48 MB cap was derived from the observed msprof warm→cold transition
 (Mul 2048×4096 warm at 11 µs; Mul 4096×4096 cold at 75 µs).
 
+**Fused attention + KV-cache plumbing**. When the graph builder is called
+with `fuse_attention=True` and `model_kv_cache=True`, the NPU cost model
+emits a single `ATTENTION_FUSED` node per attention block (matching the
+FlashAttentionScore kernel that Ascend runtimes dispatch), plus explicit
+`KV_CONCAT` / `KV_SLICE` / `TRANSPOSE` / `TRIU` plumbing nodes for the
+decode-step KV-cache work. Fused attention cost =
+`max(cube, vec, mem) + static_fa_us`; plumbing cost = bytes/BW +
+`static_plumbing_us`. Calibrated to ~25 µs/call for the observed
+Qwen3-0.6B FlashAttentionScore.
+
+**Sub-kernel multipliers**. Some logical ops unroll to N small kernels on
+real hardware — RMSNorm → `Pows + ReduceMean + Rsqrt + Mul + Mul` (with
+Cast ops interleaved), RoPE → `Neg + Mul + Add`. The NPU model charges
+`N × (static_vector_us + host_dispatch_us)` for LAYER_NORM (N=5) and
+ROPE (N=2), absorbing the dozens of Cast / Neg / AsStrided kernels
+msprof reports without bloating the graph.
+
 ### Validated Against msmodeling
 
 The NPU backend has been validated against Huawei's open-source [msmodeling](https://github.com/opensim-ai/msmodeling) (MindStudio-Modeling) simulator on real HuggingFace model configs running on the Ascend 910B (ATLAS_800_A2_376T_64G) device profile:
@@ -468,6 +488,24 @@ accurate simulator (`reports/ca_pipe_analysis.json`):
 
 The script fails CI if any op family drifts outside [0.80, 1.25], giving us
 a regression harness every future cost-model change must satisfy.
+
+### Validated End-to-End on Qwen3-0.6B
+
+Beyond kernel-level validation, the NPU backend has been validated
+end-to-end against a real msprof trace of Qwen3-0.6B running on 910C
+(`scripts/qwen_stress.py --msprof` then
+`/tmp/compare_qwen_sim_vs_msprof.py`):
+
+| Metric | Value |
+|---|---|
+| msprof captured total (2 warmup + TTFT + 1 full 32-token gen) | 462 ms |
+| Simulated, one full generation (prefill 128 + 32 decode) | 200 ms |
+| Extrapolated to msprof workload (4 prefills + 65 decodes) | 418 ms |
+| **End-to-end ratio** | **1.11×** |
+
+Per-op-family alignment: ATTENTION_FUSED 10.5% / 10.2% msprof,
+KV_CONCAT 5.2% / 6.1%, TRANSPOSE 2.5% / 2.9%, KV_SLICE 5.2% / 3.4%,
+LAYER_NORM (×5 sub-kernels) 19.8% / ~14% (Pows+ReduceMean+Rsqrt+Cast).
 
 ### ConfigExtractor vs DispatchExtractor
 

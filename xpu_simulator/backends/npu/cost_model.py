@@ -16,6 +16,28 @@ from .hardware import AscendSpec
 # Ops that run on the CUBE unit (matrix engine)
 _CUBE_OPS = {OpType.MATMUL, OpType.CONV2D}
 
+# Ops that run on the MIX_AIC path (CUBE + VECTOR in one fused kernel).
+# FlashAttentionScore on Ascend is dispatched here: QK matmul + softmax + SV
+# matmul all fused, cube and vector pipes overlap within the kernel.
+_FUSED_ATTN_OPS = {OpType.ATTENTION_FUSED}
+
+# Memory-plumbing ops that move tensors around without compute.
+# TRANSPOSE/KV_SLICE/KV_CONCAT stream data through UB; TRIU is a tiny
+# constant-build kernel. All pay per-op launch/floor but minimal compute.
+_PLUMBING_OPS = {
+    OpType.KV_CONCAT, OpType.KV_SLICE, OpType.TRANSPOSE, OpType.TRIU,
+}
+
+# Sub-kernel counts: some "logical" ops are implemented on real NPU as a
+# chain of small kernels, each paying its own static + host-dispatch floor.
+# Calibrated to msprof Qwen3-0.6B where RMSNorm unrolls to 5 kernels
+# (Pows + ReduceMean + Rsqrt + Mul + Mul, with Cast ops interleaved) and
+# RoPE unrolls to ~3 kernels (Neg + Mul + Add for the half-rotation).
+_SUB_KERNEL_COUNT: dict[OpType, int] = {
+    OpType.LAYER_NORM: 5,
+    OpType.ROPE: 2,  # Neg + (Mul+Add fused); calibrated vs Qwen3 msprof Neg share
+}
+
 # Ops that run on the VECTOR unit
 _VECTOR_OPS = {
     OpType.RELU, OpType.ADD, OpType.GELU, OpType.SILU, OpType.MUL,
@@ -137,11 +159,39 @@ class NPUCostModel(CostModel):
 
     def estimate(self, op: OpSpec) -> OpCost:
         if op.op_type in _CUBE_OPS:
-            return self._estimate_cube(op)
+            cost = self._estimate_cube(op)
+        elif op.op_type in _FUSED_ATTN_OPS:
+            cost = self._estimate_fused_attention(op)
+        elif op.op_type in _PLUMBING_OPS:
+            cost = self._estimate_plumbing(op)
         elif op.op_type in _VECTOR_OPS:
-            return self._estimate_vector(op)
+            cost = self._estimate_vector(op)
         else:
-            return self._estimate_vector(op)  # fallback
+            cost = self._estimate_vector(op)  # fallback
+
+        # Per-op host dispatch floor (PyTorch/ACL launch overhead). Distinct
+        # from static_vector_us which is the on-device kernel floor; this
+        # captures host-side launch cost that applies to every kernel.
+        # Only applied in warm_l2 (runtime inference) mode — CA-sim and
+        # cold-path benchmarks measure device cycles only and must not
+        # include host-side launch.
+        if self.warm_l2:
+            host_us = self.hw.efficiency_factors.get("host_dispatch_us", 0.0)
+            if host_us > 0:
+                cost.latency_us += host_us
+                cost.scalar_us = (cost.scalar_us or 0.0) + host_us
+
+            # Sub-kernel multiplier: logical ops that unroll to N real
+            # kernels on device each pay N static + N host-dispatch floors.
+            n_sub = _SUB_KERNEL_COUNT.get(op.op_type, 1)
+            if n_sub > 1:
+                extra_static = (n_sub - 1) * (
+                    self.hw.get_efficiency("static_vector_us")
+                    + host_us
+                )
+                cost.latency_us += extra_static
+                cost.scalar_us = (cost.scalar_us or 0.0) + extra_static
+        return cost
 
     # ------------------------------------------------------------------ #
     # CUBE pipeline (MatMul / Conv2D)
@@ -294,6 +344,114 @@ class NPUCostModel(CostModel):
             mte2_us=mte2_us,
             mte3_us=mte3_us,
             vec_us=compute_us,
+            scalar_us=static_overhead_us,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Fused attention (FlashAttentionScore-style)
+    # ------------------------------------------------------------------ #
+
+    def _estimate_fused_attention(self, op: OpSpec) -> OpCost:
+        """Cost model for a fused FA kernel.
+
+        Pipe-overlap within the kernel means cube and vector work run in
+        parallel; latency = max(cube_time, vector_time, mem_time) + launch.
+        Calibrated to ~25 µs/call on 910C for Qwen3-0.6B decode shapes
+        (msprof FlashAttentionScore avg).
+        """
+        dtype_str = op.inputs[0].dtype.value if op.inputs else "bf16"
+
+        q_seq = op.attrs.get("q_seq", 1)
+        kv_seq = op.attrs.get("kv_seq", 1)
+        n_heads = op.attrs.get("n_heads", 1)
+        qk_d = op.attrs.get("qk_head_dim", 128)
+        v_d = op.attrs.get("v_head_dim", 128)
+        B = op.attrs.get("batch", 1)
+
+        flops = op.attrs.get("_fused_flops", 0)
+        mem_bytes = op.memory_bytes
+
+        # Cube work: QK + SV matmuls. Reuse the same cube efficiency + peak
+        # because FA is implemented on top of the cube unit.
+        cube_efficiency = self.hw.get_efficiency(f"cube_{dtype_str}")
+        chip_cube_peak = self.hw.cube_peak_for(dtype_str) * cube_efficiency
+        cube_us = (flops / chip_cube_peak * 1e6) if chip_cube_peak > 0 else 0.0
+
+        # Vector work: online softmax (rescale + exp + normalize). Small but
+        # real — charge 5 ops/element across q_seq·kv_seq·n_heads·B tiles.
+        sm_elems = B * n_heads * q_seq * kv_seq
+        vector_peak = self.hw.vector_peak_for(dtype_str) * self.hw.get_efficiency("vector")
+        vec_us = ((5 * sm_elems) / vector_peak * 1e6) if vector_peak > 0 else 0.0
+
+        # Memory: Q, K, V, O streaming through UB. Mostly tile-local.
+        mem_efficiency = self.hw.get_efficiency("memory")
+        gm_bw = self.hw.main_memory_bandwidth() * mem_efficiency * 1e9
+        memory_us = (mem_bytes / gm_bw * 1e6) if gm_bw > 0 else 0.0
+
+        # Kernel launch + tile setup. FA has a higher floor than plain cube
+        # because it runs on MIX_AIC and needs extra synchronization.
+        static_overhead_us = self.hw.efficiency_factors.get(
+            "static_fa_us",
+            self.hw.get_efficiency("static_cube_us") * 2.0)
+
+        # Pipes overlap inside the fused kernel → max, not sum.
+        latency_us = max(cube_us, vec_us, memory_us) + static_overhead_us
+        bound = "compute (MIX_AIC)" if cube_us >= max(vec_us, memory_us) else "memory"
+
+        input_bytes = sum(t.size_bytes for t in op.inputs)
+        output_bytes = sum(t.size_bytes for t in op.outputs)
+
+        return OpCost(
+            compute_us=cube_us + vec_us,
+            memory_us=memory_us,
+            latency_us=latency_us,
+            bound=bound,
+            flops=flops,
+            bytes_accessed=mem_bytes,
+            utilization=(flops / (latency_us * 1e-6 * chip_cube_peak)
+                         if latency_us > 0 and chip_cube_peak > 0 else 0.0),
+            mte2_us=(input_bytes / gm_bw * 1e6) if gm_bw > 0 else 0.0,
+            mte3_us=(output_bytes / gm_bw * 1e6) if gm_bw > 0 else 0.0,
+            cube_us=cube_us,
+            vec_us=vec_us,
+            scalar_us=static_overhead_us,
+        )
+
+    # ------------------------------------------------------------------ #
+    # KV-cache plumbing (ConcatD / Slice)
+    # ------------------------------------------------------------------ #
+
+    def _estimate_plumbing(self, op: OpSpec) -> OpCost:
+        """Cost model for memory-only plumbing ops (KV_CONCAT).
+
+        Msprof on Qwen3-0.6B shows ConcatD ≈ 3.8 µs/call avg. That is
+        dominated by the static kernel-launch overhead, with a small
+        memory copy on top. We reflect both.
+        """
+        mem_bytes = op.memory_bytes
+        mem_efficiency = self.hw.get_efficiency("memory")
+        gm_bw = self.hw.main_memory_bandwidth() * mem_efficiency * 1e9
+        memory_us = (mem_bytes / gm_bw * 1e6) if gm_bw > 0 else 0.0
+
+        static_overhead_us = self.hw.efficiency_factors.get(
+            "static_plumbing_us",
+            self.hw.get_efficiency("static_vector_us"))
+
+        latency_us = memory_us + static_overhead_us
+
+        input_bytes = sum(t.size_bytes for t in op.inputs)
+        output_bytes = sum(t.size_bytes for t in op.outputs)
+
+        return OpCost(
+            compute_us=0.0,
+            memory_us=memory_us,
+            latency_us=latency_us,
+            bound="memory",
+            flops=0,
+            bytes_accessed=mem_bytes,
+            utilization=0.0,
+            mte2_us=(input_bytes / gm_bw * 1e6) if gm_bw > 0 else 0.0,
+            mte3_us=(output_bytes / gm_bw * 1e6) if gm_bw > 0 else 0.0,
             scalar_us=static_overhead_us,
         )
 

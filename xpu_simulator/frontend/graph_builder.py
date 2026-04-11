@@ -23,7 +23,9 @@ class GraphBuilder:
                  quant: QuantConfig | None = None,
                  parallel: ParallelConfig | None = None,
                  phase: Phase = Phase.PREFILL,
-                 kv_seq_len: int = 0):
+                 kv_seq_len: int = 0,
+                 fuse_attention: bool = False,
+                 model_kv_cache: bool = False):
         self.graph = ComputeGraph(name)
         self.dtype = dtype
         self.quant = quant
@@ -32,6 +34,12 @@ class GraphBuilder:
         self.ep = self.parallel.ep_size
         self.phase = phase
         self.kv_seq_len = kv_seq_len
+        # If True, emit a single ATTENTION_FUSED node in place of the
+        # QK-matmul / softmax / SV-matmul chain. Matches how real NPU
+        # runtimes (FlashAttentionScore on Ascend) execute attention.
+        self.fuse_attention = fuse_attention
+        # If True, emit per-layer KV_CONCAT plumbing nodes in decode phase.
+        self.model_kv_cache = model_kv_cache
 
     def t(self, shape: tuple[int, ...], dtype: Dtype | None = None) -> TensorSpec:
         """Create a TensorSpec with the given or builder's dtype."""
@@ -173,6 +181,87 @@ class GraphBuilder:
         w2 = self.tp_linear_row(f"{prefix}.w2", tokens, inter_local, dim, mul)
         return w2
 
+    def transpose(self, name: str, shape: tuple[int, ...], *deps: Node) -> Node:
+        """Permute dims. Zero compute, but on real NPU it's a real kernel that
+        rewrites tiles and pays the per-op launch floor."""
+        op = OpSpec(OpType.TRANSPOSE, [self.t(shape)], [self.t(shape)], name=name)
+        node = self.graph.add_node(op, name)
+        for dep in deps:
+            self.graph.add_edge(dep, node)
+        return node
+
+    def triu(self, name: str, shape: tuple[int, ...], *deps: Node) -> Node:
+        """Upper-triangular causal mask build (prefill attention)."""
+        op = OpSpec(OpType.TRIU, [], [self.t(shape)], name=name)
+        node = self.graph.add_node(op, name)
+        for dep in deps:
+            self.graph.add_edge(dep, node)
+        return node
+
+    def kv_slice(self, name: str, B: int, n_kv_heads: int, head_dim: int,
+                 kv_seq_len: int, *deps: Node) -> Node:
+        """Read the current prefix view of a KV-cache tensor."""
+        full = self.t((B, n_kv_heads, kv_seq_len, head_dim))
+        op = OpSpec(OpType.KV_SLICE, [full], [full], name=name)
+        node = self.graph.add_node(op, name)
+        for dep in deps:
+            self.graph.add_edge(dep, node)
+        return node
+
+    def kv_concat(self, name: str, B: int, n_kv_heads: int, head_dim: int,
+                  kv_seq_len: int, *deps: Node) -> Node:
+        """KV-cache append: one decode step concatenates current token's K or V
+        into the cache slot at position kv_seq_len. Memory-only plumbing op
+        that mirrors the ConcatD kernels msprof reports on real Ascend.
+        Inputs: cache (B,H,kv,d) and new (B,H,1,d). Output: (B,H,kv+1,d).
+        """
+        cache = self.t((B, n_kv_heads, kv_seq_len, head_dim))
+        new = self.t((B, n_kv_heads, 1, head_dim))
+        out = self.t((B, n_kv_heads, kv_seq_len + 1, head_dim))
+        op = OpSpec(OpType.KV_CONCAT, [cache, new], [out], name=name)
+        node = self.graph.add_node(op, name)
+        for dep in deps:
+            self.graph.add_edge(dep, node)
+        return node
+
+    def _fused_attention(self, prefix: str, B: int, n_heads: int,
+                         q_seq: int, kv_S: int, qk_head_dim: int,
+                         v_head_dim: int, q_node: Node, k_node: Node,
+                         extra_deps: tuple[Node, ...] = ()) -> Node:
+        """Emit a single ATTENTION_FUSED node (FlashAttention-style).
+
+        FLOPs = QK (2·B·H·q_seq·qk_d·kv_S) + softmax (5·B·H·q_seq·kv_S)
+              + SV (2·B·H·q_seq·kv_S·v_d)
+        Inputs: Q/K/V-shaped tensors (bytes drive memory cost).
+        """
+        q = self.t((B * n_heads, q_seq, qk_head_dim))
+        k = self.t((B * n_heads, qk_head_dim, kv_S))
+        v = self.t((B * n_heads, kv_S, v_head_dim))
+        out = self.t((B * n_heads, q_seq, v_head_dim))
+
+        qk_flops = 2 * B * n_heads * q_seq * qk_head_dim * kv_S
+        sv_flops = 2 * B * n_heads * q_seq * kv_S * v_head_dim
+        sm_flops = 5 * B * n_heads * q_seq * kv_S
+        fused_flops = qk_flops + sv_flops + sm_flops
+
+        op = OpSpec(
+            OpType.ATTENTION_FUSED,
+            [q, k, v], [out],
+            attrs={
+                "_fused_flops": fused_flops,
+                "q_seq": q_seq, "kv_seq": kv_S,
+                "n_heads": n_heads, "qk_head_dim": qk_head_dim,
+                "v_head_dim": v_head_dim, "batch": B,
+            },
+            name=f"{prefix}.fa",
+        )
+        node = self.graph.add_node(op, f"{prefix}.fa")
+        self.graph.add_edge(q_node, node)
+        self.graph.add_edge(k_node, node)
+        for dep in extra_deps:
+            self.graph.add_edge(dep, node)
+        return node
+
     # ------------------------------------------------------------------ #
     # Scoring strategies (private)
     # ------------------------------------------------------------------ #
@@ -192,6 +281,11 @@ class GraphBuilder:
         else:
             q_seq = S
             kv_S = S
+
+        if self.fuse_attention:
+            return self._fused_attention(
+                prefix, B, n_heads, q_seq, kv_S,
+                qk_head_dim, v_head_dim, q_node, k_node, extra_deps)
 
         attn_score_op = OpSpec(
             OpType.MATMUL,
@@ -511,9 +605,41 @@ class GraphBuilder:
                                           OpType.ROPE, wk)
             else:
                 q_node, k_node = wq, wk
+            extra_deps = ()
+            # Head-dim transpose: V needs an explicit [B,H,S,d] layout before
+            # the SV matmul. Q and K transposes are fused into MatMul format
+            # conversion (Fractal_NZ) by CANN, so we only charge one explicit
+            # Transpose kernel per attention block, matching msprof counts.
+            if self.model_kv_cache:
+                wv = self.transpose(f"{prefix}.t_v",
+                                    (B, n_kv_heads_local, max(tokens, 1), head_dim),
+                                    wv)
+            # KV-cache plumbing: in decode we slice the cached prefix and
+            # append current K/V before scoring. Real NPU runtimes report
+            # these as Slice and ConcatD kernels.
+            if self.model_kv_cache and self.phase == Phase.DECODE:
+                kv_cur = self.kv_seq_len or 0
+                k_slice = self.kv_slice(f"{prefix}.k_slice",
+                                        B, n_kv_heads_local, head_dim,
+                                        kv_cur, k_node)
+                v_slice = self.kv_slice(f"{prefix}.v_slice",
+                                        B, n_kv_heads_local, head_dim,
+                                        kv_cur, wv)
+                k_concat = self.kv_concat(f"{prefix}.k_concat",
+                                          B, n_kv_heads_local, head_dim,
+                                          kv_cur, k_slice)
+                v_concat = self.kv_concat(f"{prefix}.v_concat",
+                                          B, n_kv_heads_local, head_dim,
+                                          kv_cur, v_slice)
+                k_node = k_concat
+                extra_deps = (v_concat,)
+            # Prefill needs a causal mask (Triu) built once per attention call.
+            if self.model_kv_cache and self.phase == Phase.PREFILL:
+                mask = self.triu(f"{prefix}.mask",
+                                 (max(tokens, 1), max(tokens, 1)))
+                extra_deps = (mask,)
             score_qk_dim = head_dim
             score_v_dim = head_dim
-            extra_deps = ()
             out_dim = n_heads_local * head_dim
 
         # Dispatch scoring strategy (on local heads)

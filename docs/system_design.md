@@ -84,6 +84,9 @@ OpType (Enum)           TensorSpec                  OpSpec
 ├── EMBEDDING            ├── INT8/FP8 (1B)
 ├── ALL_REDUCE/GATHER    └── INT4 (0.5B)
 ├── DEQUANT
+├── ATTENTION_FUSED     (FlashAttention as one kernel, when backend supports it)
+├── KV_CONCAT / KV_SLICE  (decode-step KV-cache plumbing)
+├── TRIU                (prefill causal mask)
 └── UNKNOWN
 ```
 
@@ -176,6 +179,24 @@ class OpCost:
 - **Per-op static extras** on top of the vector floor (LayerNorm +2 µs,
   Softmax +3 µs) to account for reduction-tree init and max/exp table
   setup observed in small-shape runs
+- **Fused attention path** (`_estimate_fused_attention`): when the graph
+  emits an `ATTENTION_FUSED` node, cost is modeled as a MIX_AIC kernel
+  with pipe-overlap inside the kernel — `latency = max(cube, vec, mem) +
+  static_fa_us`. Calibrated to Qwen3-0.6B FlashAttentionScore on real
+  910C (~25 µs/call avg). Static floor 18 µs (910B) / 20 µs (910C).
+- **Memory plumbing path** (`_estimate_plumbing`): handles `KV_CONCAT`,
+  `KV_SLICE`, `TRANSPOSE`, and `TRIU` as memory-only kernels. Each pays
+  a small `static_plumbing_us` floor (910B: 3.0 µs, 910C: 3.5 µs) plus
+  the copied-bytes / HBM-BW term. Matches msprof ConcatD/Slice counts.
+- **Host-dispatch floor** (`host_dispatch_us`, 910B: 1.5 µs, 910C:
+  1.8 µs): per-op torch_npu/ACL launch cost added **only in warm_l2
+  mode** — CA-sim cold-path measures device cycles only and must not
+  include host-side launch.
+- **Sub-kernel multipliers**: some logical ops unroll to N small kernels
+  on device (RMSNorm → Pows+ReduceMean+Rsqrt+Mul+Mul, RoPE → Neg+Mul+Add
+  fused). The model charges `N × (static_vector_us + host_dispatch_us)`
+  for these (`LAYER_NORM: 5`, `ROPE: 2`). Absorbs the Cast/Neg/AsStrided
+  kernels msprof reports without bloating the graph.
 
 #### 3.1.4 Performance Evaluator (`evaluator.py`)
 
@@ -729,6 +750,30 @@ in the cache in practice.
 `warm_l2=False` against the 40-kernel CA simulator trace corpus stored at
 `reports/ca_pipe_analysis.json` and asserts per-op geomean ratios stay in
 [0.80, 1.25].
+
+### 6.3.1 End-to-End Qwen3-0.6B Validation
+
+In addition to the kernel-level CA-sim regression, the NPU model is
+validated end-to-end against a real msprof trace of Qwen3-0.6B running
+on 910C (prompt=128, 1 TTFT + 1 full 32-token generation + 2 warmup
+generations with 16 tokens, via `scripts/qwen_stress.py --msprof`).
+
+The graph is built with `fuse_attention=True` and `model_kv_cache=True`
+so the simulator emits the same op-type distribution the real runtime
+produces (FlashAttentionScore, ConcatD, Slice, Transpose, Triu).
+
+| Metric | Value |
+|---|---|
+| Sim one full generation (prefill 128 + 32 decode) | 200 ms |
+| Extrapolated to msprof workload (4 prefills + 65 decodes) | 418 ms |
+| msprof captured grand total | 462 ms |
+| **Ratio** | **1.11×** |
+
+Per-op-family alignment (sim % vs msprof %): ATTENTION_FUSED 10.5 / 10.2,
+KV_CONCAT 5.2 / 6.1, KV_SLICE 5.2 / 3.4, TRANSPOSE 2.5 / 2.9, LAYER_NORM
+(w/ sub-kernel ×5) 19.8 / ~14 (includes Pows+ReduceMean+Rsqrt+Cast).
+
+Comparison script: `/tmp/compare_qwen_sim_vs_msprof.py`.
 
 ### 6.4 ASAP Overlap Scheduling
 

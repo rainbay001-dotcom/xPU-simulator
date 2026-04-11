@@ -28,6 +28,10 @@ class OpType(Enum):
     DEQUANT = auto()
     ALL_GATHER = auto()
     REDUCE_SCATTER = auto()
+    ATTENTION_FUSED = auto()  # Fused FlashAttention (QK + softmax + SV) as one kernel
+    KV_CONCAT = auto()        # Append current token's K/V to cache (decode-step plumbing)
+    KV_SLICE = auto()         # Read current view of K/V cache (decode-step plumbing)
+    TRIU = auto()             # Build causal mask (prefill-only plumbing)
     UNKNOWN = auto()
 
 
@@ -118,7 +122,12 @@ class OpSpec:
         elif self.op_type in (OpType.ALL_GATHER, OpType.REDUCE_SCATTER):
             # Communication ops: no compute, bandwidth-dominated
             return 0
-        elif self.op_type in (OpType.TRANSPOSE, OpType.RESHAPE):
+        elif self.op_type in (OpType.TRANSPOSE, OpType.RESHAPE, OpType.KV_CONCAT,
+                               OpType.KV_SLICE, OpType.TRIU):
+            return 0
+        elif self.op_type == OpType.ATTENTION_FUSED:
+            # Pre-computed via _fused_flops at construction time; if missing,
+            # approximate as 2 * Q·K^T + 5 * softmax + 2 * S·V using attn shapes.
             return 0
         return 0
 
