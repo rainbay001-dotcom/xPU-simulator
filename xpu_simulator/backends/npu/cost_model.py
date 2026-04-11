@@ -26,13 +26,16 @@ _VECTOR_OPS = {
 
 # Memory-pass multipliers for VECTOR ops.
 # Multi-pass ops (LayerNorm, Softmax) read data multiple times internally:
-#   LayerNorm: pass1 (mean), pass2 (variance), pass3 (normalize+write) → ~3.5x
-#   Softmax:   pass1 (max), pass2 (exp+sum), pass3 (normalize+write) → ~2.3x
-# Calibrated from real Ascend 910C profiling data.
+#   LayerNorm: pass1 (mean), pass2 (variance), pass3 (normalize+write)
+#   Softmax:   pass1 (max), pass2 (exp+sum), pass3 (normalize+write)
+# Values are lower than the nominal pass count because inner passes hit
+# UB/L2 rather than HBM. Re-calibrated 2026-04-11 against 910B msprof
+# large-shape sweeps (1024x4096 ... 4096x4096) where mem_passes=3.5
+# overpredicted LN by 35% and softmax mem_passes=2.3 overpredicted by 49%.
 _VECTOR_MEM_PASSES: dict[OpType, float] = {
-    OpType.LAYER_NORM: 3.5,
-    OpType.SOFTMAX: 2.3,
-    OpType.ROPE: 2.0,       # read + trig compute + write with interleave
+    OpType.LAYER_NORM: 2.8,
+    OpType.SOFTMAX: 1.7,
+    OpType.ROPE: 2.5,       # CA sim: ~2.5x bytes/cycle cost of ADD due to trig unit serialization
     OpType.RELU: 1.0,
     OpType.ADD: 1.0,
     OpType.GELU: 1.0,
@@ -42,6 +45,34 @@ _VECTOR_MEM_PASSES: dict[OpType, float] = {
     OpType.GATHER: 1.0,
     OpType.DEQUANT: 1.0,
 }
+
+# Additional per-op static overhead (us) on top of `static_vector_us`.
+# Some kernels have higher fixed setup than the bare vector floor:
+#   LayerNorm: reduction tree init + epsilon/gamma/beta scalar broadcast
+#   Softmax:   max-reduction + exp table setup + normalize pass orchestration
+# Calibrated against 910B msprof small-shape measurements where the bare
+# 1.7 us floor underpredicted LN by ~2 us and softmax by ~3 us.
+_VECTOR_STATIC_US_EXTRA: dict[OpType, float] = {
+    OpType.LAYER_NORM: 2.0,
+    OpType.SOFTMAX: 3.0,
+}
+
+# Simple elementwise ops whose operands commonly stay L2-resident in inference
+# loops (activations only, no weights, small intermediate footprint).
+# Calibrated 2026-04-11 against 910B msprof benchmarks where repeated ops on
+# warm tensors hit the L2 cache rather than HBM.
+_L2_RESIDENT_OPS = {OpType.ADD, OpType.MUL, OpType.RELU}
+
+# Cap L2 residency to realistic warm working sets. Full L2 is 192 MB but
+# LRU effective capacity is ~60% and benchmark rerun footprints must fit
+# in it. Compared against 910B msprof sweeps:
+#   - Mul 2048x4096 (32 MB unique input) → warm (measured 11 us)
+#   - Mul 4096x4096 (64 MB unique input) → cold (measured 75 us)
+#   - Relu 4096x4096 (32 MB unique input) → warm (measured 12.8 us)
+# The transition sits at ~48 MB of *unique input bytes* (excluding output,
+# which is a streaming write). This is the right accounting: mem_bytes
+# double-counts and inflates the footprint artificially.
+_L2_WARM_CAP_INPUT_BYTES = 48 * 1024 * 1024
 
 # Data layout preferences per op type
 _LAYOUT_MAP = {
@@ -91,9 +122,18 @@ class NPUCostModel(CostModel):
 
     hw: AscendSpec
 
-    def __init__(self, hw: AscendSpec):
+    def __init__(self, hw: AscendSpec, *, warm_l2: bool = True):
+        """
+        Args:
+            hw: Ascend hardware spec.
+            warm_l2: If True (default), elementwise ops on small activation
+                tensors hit L2 instead of HBM — matches warm microbenchmark
+                runs and steady-state LLM inference. Set False for cold-path
+                validation (CA sim, first-iteration execution).
+        """
         super().__init__(hw)
         self.hw: AscendSpec = hw
+        self.warm_l2 = warm_l2
 
     def estimate(self, op: OpSpec) -> OpCost:
         if op.op_type in _CUBE_OPS:
@@ -152,6 +192,14 @@ class NPUCostModel(CostModel):
 
         bound = "compute (PIPE_M)" if compute_us >= memory_us else "memory"
 
+        # Per-pipe microarchitectural breakdown.
+        # CUBE: inputs flow GM→L1→L0A/L0B via MTE2; outputs drain L0C→GM via
+        # fixpipe (accounted on MTE3 here). CUBE pipe busy = compute_us.
+        input_bytes = sum(t.size_bytes for t in op.inputs)
+        output_bytes = sum(t.size_bytes for t in op.outputs)
+        mte2_us = (input_bytes / gm_bw * 1e6) if gm_bw > 0 else 0.0
+        mte3_us = (output_bytes / gm_bw * 1e6) if gm_bw > 0 else 0.0
+
         return OpCost(
             compute_us=compute_us + format_overhead_us,
             memory_us=memory_us,
@@ -160,6 +208,10 @@ class NPUCostModel(CostModel):
             flops=flops,
             bytes_accessed=mem_bytes,
             utilization=utilization,
+            mte2_us=mte2_us,
+            mte3_us=mte3_us,
+            cube_us=compute_us,
+            scalar_us=static_overhead_us,
         )
 
     # ------------------------------------------------------------------ #
@@ -183,8 +235,19 @@ class NPUCostModel(CostModel):
         effective_mem_bytes = mem_bytes * mem_passes
 
         mem_efficiency = self.hw.get_efficiency("memory")
-        gm_bw = self.hw.main_memory_bandwidth() * mem_efficiency * 1e9  # B/s
-        memory_us = (effective_mem_bytes / gm_bw * 1e6) if gm_bw > 0 else 0.0
+        # L2 residency: simple elementwise ops (ADD/MUL/RELU) on tensors that
+        # fit in L2 run at L2 bandwidth, not HBM. This captures the real hw
+        # behavior observed in msprof benchmarks where repeated ops on warm
+        # activations hit L2 cache.
+        unique_input_bytes = sum(t.size_bytes for t in op.inputs)
+        if (self.warm_l2
+                and op.op_type in _L2_RESIDENT_OPS
+                and unique_input_bytes <= _L2_WARM_CAP_INPUT_BYTES):
+            l2_level = self.hw.get_mem_level("L2")
+            bw = l2_level.bandwidth_GBs * mem_efficiency * 1e9
+        else:
+            bw = self.hw.main_memory_bandwidth() * mem_efficiency * 1e9  # B/s
+        memory_us = (effective_mem_bytes / bw * 1e6) if bw > 0 else 0.0
 
         # --- Compute bound: chip-level VECTOR peak ---
         vector_peak = self.hw.vector_peak_for(dtype_str)
@@ -192,8 +255,11 @@ class NPUCostModel(CostModel):
         effective_peak = vector_peak * vector_efficiency
         compute_us = (flops / effective_peak * 1e6) if effective_peak > 0 else 0.0
 
-        # Static per-op overhead
-        static_overhead_us = self.hw.get_efficiency("static_vector_us")
+        # Static per-op overhead (bare floor + optional op-specific extra)
+        static_overhead_us = (
+            self.hw.get_efficiency("static_vector_us")
+            + _VECTOR_STATIC_US_EXTRA.get(op.op_type, 0.0)
+        )
 
         # Roofline: max(compute, memory) + overhead
         latency_us = max(compute_us, memory_us) + static_overhead_us
@@ -207,6 +273,16 @@ class NPUCostModel(CostModel):
         else:
             util = 0.0
 
+        # Per-pipe microarchitectural breakdown.
+        # VECTOR ops: inputs stream GM→UB via MTE2, outputs UB→GM via MTE3.
+        # Multi-pass ops (LN/Softmax) re-read from UB (near-free on MTE2);
+        # we charge the extra passes to MTE2 for a best-effort attribution.
+        input_bytes = sum(t.size_bytes for t in op.inputs)
+        output_bytes = sum(t.size_bytes for t in op.outputs)
+        mte2_bytes = input_bytes * max(mem_passes, 1.0)
+        mte2_us = (mte2_bytes / bw * 1e6) if bw > 0 else 0.0
+        mte3_us = (output_bytes / bw * 1e6) if bw > 0 else 0.0
+
         return OpCost(
             compute_us=compute_us,
             memory_us=memory_us,
@@ -215,6 +291,10 @@ class NPUCostModel(CostModel):
             flops=flops,
             bytes_accessed=mem_bytes,
             utilization=min(util, 1.0),
+            mte2_us=mte2_us,
+            mte3_us=mte3_us,
+            vec_us=compute_us,
+            scalar_us=static_overhead_us,
         )
 
     # ------------------------------------------------------------------ #

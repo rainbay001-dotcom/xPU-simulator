@@ -7,7 +7,7 @@ Given a model architecture, xPU-Simulator builds a computation graph, estimates 
 
 - **Roofline-based cost model** with compute/memory bound classification, hardware efficiency factors, and per-op static overhead
 - **NVIDIA GPU backend** (A100, H100) with Tensor Core / CUDA Core distinction, compute/memory efficiency factors, and op-class-aware static overhead (5µs TC, 2µs CUDA)
-- **Huawei Ascend NPU backend** (910B, 910C) with hybrid roofline cost model (chip-level cube peak with utilization + aggregate memory bandwidth), format conversion overhead, compute/memory efficiency factors (0.70/0.60), and per-op static overhead (5µs CUBE, 2µs VECTOR) — validated against Huawei's [msmodeling](https://github.com/opensim-ai/msmodeling) (0.999x–1.077x accuracy)
+- **Huawei Ascend NPU backend** (910B, 910C) with hybrid roofline cost model (chip-level cube peak with utilization + aggregate memory bandwidth), format conversion overhead, compute/memory efficiency factors (0.70/0.60), per-op static overhead, **per-pipe microarchitectural breakdown** (MTE2/MTE3/VEC/CUBE/SCALAR), and **warm-L2 / cold-HBM regime switch** — validated against Huawei's [msmodeling](https://github.com/opensim-ai/msmodeling) (0.999x–1.077x accuracy) and the CANN CA cycle-accurate simulator (0.98–1.24x geomean across 40 kernels)
 - **7 graph extraction methods**: FX trace, torch.export, ONNX, profiler trace, GraphBuilder DSL, ConfigExtractor, DispatchExtractor
 - **Config-driven LLM simulation** from HuggingFace `config.json` — supports 8 architectures (LLaMA, Mistral, Qwen2, Mixtral, DeepSeek, GPT-2, Falcon, GPT-NeoX)
 - **Quantization-aware modeling**: INT4/INT8/FP8 weight and activation quantization with dequantization overhead, HuggingFace `quantization_config` parsing (GPTQ, AWQ, FP8)
@@ -388,17 +388,57 @@ export_html_report(graph, results, "report.html",
 
 ### Efficiency Factors
 
-Raw peak specs are unachievable in practice. The simulator applies hardware-calibrated efficiency factors (inspired by [msmodeling](https://github.com/opensim-ai/msmodeling)):
+Raw peak specs are unachievable in practice. The simulator applies hardware-calibrated efficiency factors (inspired by [msmodeling](https://github.com/opensim-ai/msmodeling), re-calibrated 2026-04-11 against 910B msprof + CA simulator):
 
-| Factor | GPU (A100/H100) | NPU (910B/910C) | Effect |
-|--------|-----------------|------------------|--------|
-| Compute (matmul) | 0.70 | 0.70 | Effective TFLOPS = peak × factor |
-| Compute (elementwise) | 0.85 | 0.80 (VECTOR) | Elementwise/norm/activation ops |
-| Memory bandwidth | 0.80 | 0.60 | Effective BW = peak × factor |
-| Static overhead (matmul) | 5 µs/op | 5 µs/op | Kernel dispatch, sync, etc. |
-| Static overhead (other) | 2 µs/op | 2 µs/op | Per-op fixed cost |
+| Factor | GPU (A100/H100) | NPU 910B | NPU 910C | Effect |
+|--------|-----------------|-----------|-----------|--------|
+| Compute (matmul) | 0.70 | 0.70 | 0.59 | Effective TFLOPS = peak × factor |
+| Compute (elementwise) | 0.85 | 0.80 (VECTOR) | 0.80 | Elementwise/norm/activation |
+| Memory bandwidth | 0.80 | 0.60 | 0.71 | Effective BW = peak × factor |
+| Static (matmul) | 5 µs/op | 5 µs/op | 5 µs/op | Kernel dispatch, sync |
+| Static (vector floor) | 2 µs/op | 1.7 µs/op | 2 µs/op | CA sim: ~3000 cycle floor |
+| LayerNorm / Softmax extra | — | +2 / +3 µs | +2 / +3 µs | Reduction-tree init |
 
-These factors bring estimates significantly closer to measured hardware performance.
+The 910B memory-bandwidth factor of 0.60 is independently corroborated by the CA simulator: an ADD 2048×4096 kernel on cold HBM completes at 940 GB/s effective BW, exactly 0.59 × 1600 GB/s peak.
+
+### Microarchitectural Modeling (NPU)
+
+The NPU cost model populates per-pipe busy-time fields on every `OpCost`,
+exposing the DaVinci AI core pipeline breakdown without running a
+cycle-accurate simulator:
+
+| Pipe | What it models |
+|---|---|
+| `mte2_us` | GM/L2 → L1/UB load engine (scaled by memory-pass count for LN/Softmax/RoPE) |
+| `mte3_us` | L1/UB → GM store engine (fixpipe for CUBE outputs) |
+| `vec_us` | VECTOR unit compute time (elementwise, reduction, activation) |
+| `cube_us` | CUBE unit compute time (matrix / conv) |
+| `scalar_us` | SCALAR unit dispatch + sync floor |
+
+Pipe values do **not** sum to `latency_us` — the pipes overlap via
+double-buffering. Latency stays `max(compute, memory) + overhead`, matching
+observed kernel times. Pipe breakdown feeds downstream bottleneck analysis
+and pipeline visualization.
+
+**Multi-pass memory multipliers** (`_VECTOR_MEM_PASSES`) for reduction ops:
+
+| Op | Passes | Rationale |
+|---|---|---|
+| LayerNorm | 2.8× | mean + variance + normalize |
+| Softmax | 1.7× | max + exp-sum + normalize (inner passes hit UB) |
+| RoPE | 2.5× | trig unit serialization (CA sim) |
+| ADD / MUL / RELU / GELU / SILU | 1.0× | single streaming pass |
+
+**Warm vs cold execution regime** (`NPUCostModel(hw, warm_l2=True|False)`):
+
+- `warm_l2=True` (default) — simple elementwise ops on warm activations
+  (≤ 48 MB unique input) hit L2 at 3200 GB/s × 0.60 instead of HBM. Matches
+  steady-state LLM inference and microbenchmark iter-2+ measurements.
+- `warm_l2=False` — cold HBM everywhere. Matches first-iteration execution
+  and the CANN CA simulator.
+
+The 48 MB cap was derived from the observed msprof warm→cold transition
+(Mul 2048×4096 warm at 11 µs; Mul 4096×4096 cold at 75 µs).
 
 ### Validated Against msmodeling
 
@@ -412,6 +452,22 @@ The NPU backend has been validated against Huawei's open-source [msmodeling](htt
 | Qwen2-72B | 711.5 | 660.4 | 1.077x | +7.7% |
 
 **Average ratio: 1.046x** (within 5% for 7B models, within 8% for 70B+ models). Differences are mainly due to hardware spec differences — msmodeling uses 376T MMA / 22T GP / 1759 GB/s while xPU-sim uses 320T CUBE / 10T VECTOR / 1600 GB/s for the 910B.
+
+### Validated Against the CANN CA Simulator
+
+`scripts/validate_against_ca_sim.py` runs the NPU cost model in cold-path
+mode (`warm_l2=False`) against 40 kernels traced from the CANN cycle-
+accurate simulator (`reports/ca_pipe_analysis.json`):
+
+| Op family | Kernels | Geomean ratio | Range |
+|-----------|---------|---------------|-------|
+| ADD | 10 | 0.98× | 0.86–1.11 |
+| MUL | 10 | 0.98× | 0.86–1.10 |
+| RELU | 10 | 1.06× | 0.95–1.21 |
+| RoPE | 10 | 1.24× | 1.02–1.66 |
+
+The script fails CI if any op family drifts outside [0.80, 1.25], giving us
+a regression harness every future cost-model change must satisfy.
 
 ### ConfigExtractor vs DispatchExtractor
 

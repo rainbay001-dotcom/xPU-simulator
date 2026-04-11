@@ -138,6 +138,16 @@ class OpCost:
     flops: int
     bytes_accessed: int
     utilization: float      # actual / peak throughput
+
+    # Optional per-pipe microarchitectural breakdown (populated by the
+    # NPU backend; 0 on backends that don't model pipe-level behavior).
+    # Values are in microseconds. They do NOT sum to latency_us — pipes
+    # overlap via double-buffering.
+    mte2_us: float = 0.0    # GM/L2 → L1/UB transfer engine (load)
+    mte3_us: float = 0.0    # L1/UB → GM/L2 transfer engine (store/fixpipe)
+    vec_us: float = 0.0     # VECTOR unit compute (elementwise/reduction)
+    cube_us: float = 0.0    # CUBE unit compute (matrix/conv)
+    scalar_us: float = 0.0  # SCALAR unit (dispatch, address calc)
 ```
 
 **GPU cost model** adds:
@@ -153,6 +163,19 @@ class OpCost:
 - Format conversion overhead (ND → NZ) for non-native tensor layouts
 - Pipeline startup/drain overhead (910B: 1.0 + 0.5 µs, 910C: 0.8 + 0.4 µs)
 - Multi-core parallelism across AI cores
+- **Per-pipe microarchitectural breakdown** (MTE2/MTE3/VEC/CUBE/SCALAR)
+  populated from tile/mem/compute times — lets consumers see *which*
+  engine is the gate without a cycle-accurate rerun
+- **Warm-L2 vs cold-HBM regime** switch (`warm_l2: bool = True`): default
+  matches warm msprof microbenchmarks (L2-resident activations); set
+  `False` for cold-path validation against the CA simulator and for
+  first-iteration execution
+- **Multi-pass memory multipliers** for reduction ops
+  (LayerNorm=2.8×, Softmax=1.7×, RoPE=2.5×) calibrated from large-shape
+  msprof sweeps and CA sim traces
+- **Per-op static extras** on top of the vector floor (LayerNorm +2 µs,
+  Softmax +3 µs) to account for reduction-tree init and max/exp table
+  setup observed in small-shape runs
 
 #### 3.1.4 Performance Evaluator (`evaluator.py`)
 
@@ -371,7 +394,8 @@ ASCEND_910B = AscendSpec(
 )
 ```
 
-**NPUCostModel** implements a hybrid roofline model:
+**NPUCostModel** implements a hybrid roofline model with microarchitectural
+pipe-level breakdown:
 
 ```
 For MATMUL [M, K] x [K, N]:
@@ -380,23 +404,61 @@ For MATMUL [M, K] x [K, N]:
      - chip_cube_peak is the aggregate peak across all AI cores
   2. Memory bound: total_bytes / (aggregate_GM_bandwidth × memory_efficiency)
      - total_bytes = input_bytes + output_bytes (chip-level, not per-tile)
-  3. Latency = max(compute_time, memory_time) + pipeline_overhead + format_conversion
+  3. Latency = max(compute, memory) + pipeline_overhead + format_conversion
+             + static_cube_us
+  4. Pipe fields: cube_us = compute, mte2_us = input_bytes / bw,
+                  mte3_us = output_bytes / bw, scalar_us = static_cube_us
 
 For elementwise/reduction ops:
-  1. VECTOR pipeline: flops / (vector_peak × vector_efficiency)
-  2. Memory: bytes / (GM_bandwidth × memory_efficiency)
-  3. Same roofline: max(compute, memory) + static overhead
+  1. VECTOR compute: flops / (vector_peak × vector_efficiency)
+  2. Memory:  effective_bytes / (bw × memory_efficiency)
+     - effective_bytes = mem_bytes × _VECTOR_MEM_PASSES[op]
+     - bw = L2 bw if (warm_l2 and op in _L2_RESIDENT_OPS
+                      and unique_input_bytes ≤ 48 MB) else HBM bw
+  3. Latency = max(compute, memory) + static_vector_us
+             + _VECTOR_STATIC_US_EXTRA[op]
+  4. Pipe fields: vec_us = compute,
+                  mte2_us = input_bytes × mem_passes / bw,
+                  mte3_us = output_bytes / bw, scalar_us = static_vector_us
 ```
 
-**Efficiency factors** (inspired by [msmodeling](https://github.com/opensim-ai/msmodeling)):
+**Efficiency factors** (inspired by [msmodeling](https://github.com/opensim-ai/msmodeling),
+re-calibrated 2026-04-11 against 910B msprof sweeps and CA simulator traces):
 - CUBE compute: 0.70 (FP16/BF16), 0.65 (INT8/FP8), 0.60 (FP32)
 - VECTOR compute: 0.80
-- Memory bandwidth: 0.60 — applied to GM reads/writes
+- Memory bandwidth: 0.60 — confirmed by CA sim (cold HBM observed at
+  ~940 GB/s on 910B, exactly 0.59 × 1600 GB/s peak)
 - Pipeline overhead: 910B: 1.0 µs startup + 0.5 µs drain; 910C: 0.8 + 0.4 µs
 - Format conversion: ~0.15x of CUBE time (ND→NZ tensor format)
-- Static overhead: 5 µs per CUBE op, 2 µs per VECTOR op (kernel dispatch, synchronization)
+- Static CUBE overhead: 5 µs per op (kernel dispatch, synchronization)
+- Static VECTOR overhead: 910B: 1.7 µs (CA sim ~3000 cycle floor at
+  1.8 GHz); 910C: 2.0 µs
+- Per-op static extras: LayerNorm +2 µs, Softmax +3 µs
 
-**Validated against msmodeling**: Average ratio 1.046x across LLaMA-8B/70B and Qwen2-7B/72B on Ascend 910B.
+**Multi-pass memory multipliers** (`_VECTOR_MEM_PASSES`):
+
+| Op | Passes | Rationale |
+|---|---|---|
+| LayerNorm | 2.8× | mean + variance + normalize passes; inner reads hit UB |
+| Softmax | 1.7× | max + exp-sum + normalize; most data stays on-chip |
+| RoPE | 2.5× | trig unit serialization (CA sim: 2.5× bytes/cycle vs ADD) |
+| ADD / MUL / RELU / GELU / SILU | 1.0× | single streaming pass |
+
+**L2 residency** (`_L2_RESIDENT_OPS = {ADD, MUL, RELU}`): simple elementwise
+ops on warm activations (unique input bytes ≤ 48 MB) hit L2 instead of HBM.
+The 48 MB cap was derived from the observed warm→cold transition in msprof
+sweeps (Mul 2048×4096 warm at 11 µs, Mul 4096×4096 cold at 75 µs).
+
+**Validation coverage**:
+
+| Source | Coverage | Geomean ratio |
+|---|---|---|
+| msmodeling (LLaMA/Qwen) | end-to-end 8B/70B inference | **1.046×** |
+| 910B msprof warm sweep | Add/Mul/Relu/Gelu/Silu/LN/Softmax/MatMul | 0.83–1.36× |
+| CA simulator (cold) | Add/Mul/Relu/RoPE size sweep (40 kernels) | 0.98–1.24× |
+| 910C msprof calibration | 24 real measurements | **1.023×** |
+
+See `scripts/validate_against_ca_sim.py` for the CA-sim regression harness.
 
 ---
 
@@ -628,7 +690,47 @@ For matmul C[M,N] = A[M,K] × B[K,N]:
 
 The hybrid roofline uses chip-level aggregate bandwidth and peak FLOPS, avoiding per-tile data amplification that would overcount memory traffic. Tile alignment penalties are captured via utilization.
 
-### 6.3 ASAP Overlap Scheduling
+**Pipe-level breakdown.** In addition to the scalar latency, the NPU model
+populates per-pipe busy-time fields on `OpCost`:
+
+```
+cube_us   = compute_us                         # CUBE unit (matmul / conv)
+mte2_us   = input_bytes  / bw                  # GM/L2 → L1/UB load engine
+mte3_us   = output_bytes / bw                  # L1/UB → GM store / fixpipe
+scalar_us = static_cube_us | static_vector_us  # dispatch + sync floor
+vec_us    = compute_us                         # VECTOR unit (populated for
+                                               #   vector ops only)
+```
+
+For VECTOR ops the `mte2_us` term is multiplied by the op's `mem_passes`
+factor so multi-pass kernels (LayerNorm, Softmax) charge their reread traffic
+to the load engine. These fields do **not** sum to `latency_us` because pipes
+overlap via double-buffering — they let downstream tooling (bottleneck
+analysis, pipeline optimizers, visualization) see *which* engine is the gate
+without running a cycle-accurate simulator.
+
+### 6.3 Cold-Path vs Warm-Path Calibration
+
+The NPU backend supports two execution regimes via the `warm_l2` flag:
+
+| Mode | Usage | Bandwidth target | Calibrated against |
+|---|---|---|---|
+| `warm_l2=True` (default) | steady-state LLM inference, repeated microbenchmarks | L2 (3200 GB/s × 0.60) for small elementwise | 910B msprof warm sweeps |
+| `warm_l2=False` | first-iteration execution, validation | HBM (1600 GB/s × 0.60) | CA simulator traces |
+
+The L2-residency heuristic only triggers for `{ADD, MUL, RELU}` with
+`unique_input_bytes ≤ 48 MB`, matching the observed msprof warm→cold
+transition (Mul 2048×4096 → warm at 11 µs; Mul 4096×4096 → cold at 75 µs).
+Other ops (LayerNorm, Softmax, RoPE, GELU, SILU) always model cold HBM
+because their working sets include reduction state that doesn't stay hot
+in the cache in practice.
+
+`scripts/validate_against_ca_sim.py` runs the cost model with
+`warm_l2=False` against the 40-kernel CA simulator trace corpus stored at
+`reports/ca_pipe_analysis.json` and asserts per-op geomean ratios stay in
+[0.80, 1.25].
+
+### 6.4 ASAP Overlap Scheduling
 
 ```python
 for node in topological_order:
@@ -644,7 +746,7 @@ This allows:
 - Communication to overlap with compute
 - No overlap within the same resource type
 
-### 6.4 Communication Algorithm Selection
+### 6.5 Communication Algorithm Selection
 
 ```python
 def all_reduce_time(msg_bytes, n_ranks, interconnect):

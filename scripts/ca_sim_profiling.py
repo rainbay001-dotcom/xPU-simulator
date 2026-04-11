@@ -43,28 +43,32 @@ BLOCK_DIM = 8  # number of AI cores to use
 SIMULATOR_LIB = "/usr/local/Ascend/cann-8.5.0/tools/simulator"
 DUMP_BASE = "/home/Ray/ca_sim_test/ca_profiling_dumps"
 
+# UB on 910B is 192KB per core. We leave headroom for workspaces.
+# Per-tile fp16 element cap: each builder can allocate multiple UB tensors
+# of size UB_TILE_ELEMS; keep the sum under ~128KB (64K fp16 elts total).
+UB_TILE_ELEMS = 16384  # 32 KB per tensor; ADD/MUL uses 3 tensors = 96 KB
+
 # Shapes to profile for each op type.
 # For VECTOR ops: (rows, cols) in fp16 — total elements = rows * cols.
 # For MATMUL: (M, K, N) in fp16.
 VECTOR_SHAPES = [
-    (1, 4096),        # small: 4K elements
-    (1024, 4096),     # medium: 4M elements (typical hidden dim)
-    (1024, 8192),     # large hidden
-    (1024, 14336),    # MLP intermediate (LLaMA-8B)
-    (2048, 4096),     # longer seq
-    (4096, 4096),     # large
+    (1, 4096),        # tiny
+    (1, 8192),
+    (4, 4096),
+    (16, 4096),
+    (64, 4096),
+    (128, 4096),
+    (256, 4096),      # single-core heavy tiling
+    (512, 4096),
+    (1024, 4096),     # LLM hidden state
+    (2048, 4096),
 ]
 
 MATMUL_SHAPES = [
+    (128, 128, 128),
+    (256, 256, 256),
+    (512, 512, 512),
     (1024, 1024, 1024),
-    (1024, 4096, 4096),
-    (1024, 4096, 14336),   # LLaMA-8B up-proj
-    (1024, 14336, 4096),   # LLaMA-8B down-proj
-    (2048, 4096, 4096),
-    (4096, 4096, 4096),
-    (1024, 4096, 11008),   # LLaMA-7B MLP
-    (1024, 11008, 4096),   # LLaMA-7B MLP down
-    (1024, 8192, 28672),   # LLaMA-70B MLP
 ]
 
 
@@ -104,48 +108,106 @@ class ProfilingResult:
 # Trace parsing
 # ------------------------------------------------------------------ #
 
+import re as _re
+
+# Matches e.g.  "[info] [00000697] (PC: 0x10d11000) SCALAR   : ..."
+_INSTR_LINE_RE = _re.compile(
+    r"\[info\]\s*\[(\d+)\]\s*\(PC:[^)]*\)\s*(SCALAR|VEC|MTE1|MTE2|MTE3|CUBE|FIXPIPE)\s*:"
+)
+
+
+def _parse_instr_log(path: str) -> dict[str, set[int]]:
+    """Return {pipe -> set of cycles where that pipe popped an instruction}."""
+    buckets: dict[str, set[int]] = {}
+    if not os.path.exists(path):
+        return buckets
+    with open(path, "r", errors="ignore") as f:
+        for line in f:
+            m = _INSTR_LINE_RE.match(line)
+            if not m:
+                continue
+            cycle = int(m.group(1))
+            pipe = m.group(2)
+            buckets.setdefault(pipe, set()).add(cycle)
+    return buckets
+
+
+def _parse_network_total_cycles(dump_path: str) -> int:
+    """Extract total_cycles from profile_network_log0.toml."""
+    path = os.path.join(dump_path, "profile_network_log0.toml")
+    if not os.path.exists(path):
+        return 0
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("total_cycles"):
+                # total_cycles = 1659
+                parts = line.split("=")
+                if len(parts) == 2:
+                    try:
+                        return int(parts[1].strip())
+                    except ValueError:
+                        return 0
+    return 0
+
+
 def parse_ca_trace(dump_path: str, num_cores: int = BLOCK_DIM) -> list[PipeStats]:
-    """Parse CA sim dump2trace JSON files, return per-core PipeStats."""
-    from op_gen.simulator.Simulator import Simulator
-    trace_dir = os.path.join(dump_path, "traces")
-    os.makedirs(trace_dir, exist_ok=True)
-    Simulator.run([f"--dump_path={dump_path}", f"--output_path={trace_dir}"])
+    """Parse CA sim instruction dumps, return per-core PipeStats.
 
-    results = []
+    Per-pipe busy cycles are estimated as the number of distinct simulator
+    cycles at which the pipe popped an instruction. This is a good proxy
+    for pipe utilization since popped instructions execute for at least 1
+    cycle and our interest is in ratios (MTE-bound vs VEC-bound), not
+    absolute instruction latency.
+
+    Total cycles come from profile_network_log0.toml.
+    """
+    network_total = _parse_network_total_cycles(dump_path)
+
+    results: list[PipeStats] = []
     for core_id in range(num_cores):
-        trace_file = os.path.join(trace_dir, f"dump2trace_core{core_id}.json")
-        if not os.path.exists(trace_file):
-            continue
-        with open(trace_file) as f:
-            trace = json.load(f)
-
         stats = PipeStats()
-        min_ts = float("inf")
-        max_end = 0
+        # Each core has one vec-core (veccore0/1) and one cube-core (cubecore0).
+        vec_path_0 = os.path.join(dump_path, f"core{core_id}.veccore0.instr_popped_log.dump")
+        vec_path_1 = os.path.join(dump_path, f"core{core_id}.veccore1.instr_popped_log.dump")
+        cube_path = os.path.join(dump_path, f"core{core_id}.cubecore0.instr_popped_log.dump")
 
-        for ev in trace.get("traceEvents", []):
-            ts = ev.get("ts", 0)
-            dur = ev.get("dur", 0)
-            tid = ev.get("tid", "")
-            end = ts + dur
+        vec_buckets = _parse_instr_log(vec_path_0)
+        # Merge veccore1 into the same pipe buckets
+        for pipe, cycles in _parse_instr_log(vec_path_1).items():
+            vec_buckets.setdefault(pipe, set()).update(cycles)
+        cube_buckets = _parse_instr_log(cube_path)
 
-            min_ts = min(min_ts, ts)
-            max_end = max(max_end, end)
+        all_cycles: set[int] = set()
+        for cycles in vec_buckets.values():
+            all_cycles |= cycles
+        for cycles in cube_buckets.values():
+            all_cycles |= cycles
 
-            if tid == "MTE2":
-                stats.mte2_cycles += dur
-            elif tid == "MTE3":
-                stats.mte3_cycles += dur
-            elif tid == "VECTOR":
-                stats.vector_cycles += dur
-            elif tid == "CUBE":
-                stats.cube_cycles += dur
-            elif tid == "SCALAR":
-                stats.scalar_cycles += dur
+        if not all_cycles and not vec_buckets and not cube_buckets:
+            continue
 
-        stats.kernel_start = min_ts if min_ts != float("inf") else 0
-        stats.kernel_end = max_end
-        stats.total_cycles = max_end - stats.kernel_start
+        stats.mte2_cycles = len(vec_buckets.get("MTE2", set())) + len(cube_buckets.get("MTE2", set()))
+        stats.mte3_cycles = len(vec_buckets.get("MTE3", set())) + len(cube_buckets.get("MTE3", set()))
+        stats.vector_cycles = len(vec_buckets.get("VEC", set()))
+        stats.cube_cycles = len(cube_buckets.get("CUBE", set())) + len(cube_buckets.get("FIXPIPE", set()))
+        stats.scalar_cycles = len(vec_buckets.get("SCALAR", set())) + len(cube_buckets.get("SCALAR", set()))
+
+        if all_cycles:
+            stats.kernel_start = min(all_cycles)
+            stats.kernel_end = max(all_cycles)
+            stats.total_cycles = stats.kernel_end - stats.kernel_start + 1
+        else:
+            stats.total_cycles = network_total
+
+        results.append(stats)
+
+    # Fallback: if per-core parsing gave nothing, synthesize a single entry
+    # from the network total so the pipeline still produces a row.
+    if not results and network_total > 0:
+        stats = PipeStats()
+        stats.total_cycles = network_total
+        stats.kernel_end = network_total
         results.append(stats)
 
     return results
@@ -198,156 +260,140 @@ def _vec_repeat_params(num_elements: int):
     return mask, repeat
 
 
+def _tile_dims(rows: int, cols: int) -> tuple[int, int, int, int]:
+    """Return (total_padded, per_core, tile, num_tiles) for vector ops.
+
+    Pads the total so every core runs an equal number of fixed-size tiles.
+    Each tile is UB_TILE_ELEMS elements (fp16), aligned to 16.
+    """
+    total_raw = rows * cols
+    tile = UB_TILE_ELEMS
+    per_core_raw = math.ceil(total_raw / BLOCK_DIM)
+    num_tiles = max(1, math.ceil(per_core_raw / tile))
+    per_core = num_tiles * tile
+    total_padded = BLOCK_DIM * per_core
+    return total_padded, per_core, tile, num_tiles
+
+
 def build_add_kernel(rows: int, cols: int) -> tuple:
-    """vec_add: C = A + B. Single-pass memory."""
+    """vec_add: C = A + B. Single-pass memory, UB-tiled."""
     t = tik.Tik(disable_debug=False)
-    total = rows * cols
-    per_core = math.ceil(total / BLOCK_DIM)
-    # Align to 16 (fp16 alignment)
-    per_core = math.ceil(per_core / 16) * 16
+    total, per_core, tile, num_tiles = _tile_dims(rows, cols)
 
     gm_a = t.Tensor("float16", (total,), name="gm_a", scope=tik.scope_gm)
     gm_b = t.Tensor("float16", (total,), name="gm_b", scope=tik.scope_gm)
     gm_c = t.Tensor("float16", (total,), name="gm_c", scope=tik.scope_gm)
 
     with t.for_range(0, BLOCK_DIM, block_num=BLOCK_DIM) as bid:
-        ub_a = t.Tensor("float16", (per_core,), name="ub_a", scope=tik.scope_ubuf)
-        ub_b = t.Tensor("float16", (per_core,), name="ub_b", scope=tik.scope_ubuf)
-        ub_c = t.Tensor("float16", (per_core,), name="ub_c", scope=tik.scope_ubuf)
+        ub_a = t.Tensor("float16", (tile,), name="ub_a", scope=tik.scope_ubuf)
+        ub_b = t.Tensor("float16", (tile,), name="ub_b", scope=tik.scope_ubuf)
+        ub_c = t.Tensor("float16", (tile,), name="ub_c", scope=tik.scope_ubuf)
 
-        offset = bid * per_core
-        _tik_data_move_in(t, ub_a, gm_a[offset], per_core)
-        _tik_data_move_in(t, ub_b, gm_b[offset], per_core)
+        mask, repeat = _vec_repeat_params(tile)
+        with t.for_range(0, num_tiles) as ti:
+            offset = bid * per_core + ti * tile
+            _tik_data_move_in(t, ub_a, gm_a[offset], tile)
+            _tik_data_move_in(t, ub_b, gm_b[offset], tile)
+            t.vec_add(mask, ub_c, ub_a, ub_b, repeat, 1, 1, 1)
+            _tik_data_move_out(t, gm_c[offset], ub_c, tile)
 
-        mask, repeat = _vec_repeat_params(per_core)
-        t.vec_add(mask, ub_c, ub_a, ub_b, repeat, 1, 1, 1)
-
-        _tik_data_move_out(t, gm_c[offset], ub_c, per_core)
-
-    return t, f"add_{rows}x{cols}"
+    return t, f"add_{rows}x{cols}", [gm_a, gm_b], [gm_c]
 
 
 def build_mul_kernel(rows: int, cols: int) -> tuple:
-    """vec_mul: C = A * B. Single-pass memory."""
+    """vec_mul: C = A * B. Single-pass memory, UB-tiled."""
     t = tik.Tik(disable_debug=False)
-    total = rows * cols
-    per_core = math.ceil(total / BLOCK_DIM)
-    per_core = math.ceil(per_core / 16) * 16
+    total, per_core, tile, num_tiles = _tile_dims(rows, cols)
 
     gm_a = t.Tensor("float16", (total,), name="gm_a", scope=tik.scope_gm)
     gm_b = t.Tensor("float16", (total,), name="gm_b", scope=tik.scope_gm)
     gm_c = t.Tensor("float16", (total,), name="gm_c", scope=tik.scope_gm)
 
     with t.for_range(0, BLOCK_DIM, block_num=BLOCK_DIM) as bid:
-        ub_a = t.Tensor("float16", (per_core,), name="ub_a", scope=tik.scope_ubuf)
-        ub_b = t.Tensor("float16", (per_core,), name="ub_b", scope=tik.scope_ubuf)
-        ub_c = t.Tensor("float16", (per_core,), name="ub_c", scope=tik.scope_ubuf)
+        ub_a = t.Tensor("float16", (tile,), name="ub_a", scope=tik.scope_ubuf)
+        ub_b = t.Tensor("float16", (tile,), name="ub_b", scope=tik.scope_ubuf)
+        ub_c = t.Tensor("float16", (tile,), name="ub_c", scope=tik.scope_ubuf)
 
-        offset = bid * per_core
-        _tik_data_move_in(t, ub_a, gm_a[offset], per_core)
-        _tik_data_move_in(t, ub_b, gm_b[offset], per_core)
+        mask, repeat = _vec_repeat_params(tile)
+        with t.for_range(0, num_tiles) as ti:
+            offset = bid * per_core + ti * tile
+            _tik_data_move_in(t, ub_a, gm_a[offset], tile)
+            _tik_data_move_in(t, ub_b, gm_b[offset], tile)
+            t.vec_mul(mask, ub_c, ub_a, ub_b, repeat, 1, 1, 1)
+            _tik_data_move_out(t, gm_c[offset], ub_c, tile)
 
-        mask, repeat = _vec_repeat_params(per_core)
-        t.vec_mul(mask, ub_c, ub_a, ub_b, repeat, 1, 1, 1)
-
-        _tik_data_move_out(t, gm_c[offset], ub_c, per_core)
-
-    return t, f"mul_{rows}x{cols}"
+    return t, f"mul_{rows}x{cols}", [gm_a, gm_b], [gm_c]
 
 
 def build_relu_kernel(rows: int, cols: int) -> tuple:
-    """vec_relu: Y = max(0, X). Single-pass, single input."""
+    """vec_relu: Y = max(0, X). Single-pass, UB-tiled."""
     t = tik.Tik(disable_debug=False)
-    total = rows * cols
-    per_core = math.ceil(total / BLOCK_DIM)
-    per_core = math.ceil(per_core / 16) * 16
+    total, per_core, tile, num_tiles = _tile_dims(rows, cols)
 
     gm_x = t.Tensor("float16", (total,), name="gm_x", scope=tik.scope_gm)
     gm_y = t.Tensor("float16", (total,), name="gm_y", scope=tik.scope_gm)
 
     with t.for_range(0, BLOCK_DIM, block_num=BLOCK_DIM) as bid:
-        ub_x = t.Tensor("float16", (per_core,), name="ub_x", scope=tik.scope_ubuf)
-        ub_y = t.Tensor("float16", (per_core,), name="ub_y", scope=tik.scope_ubuf)
+        ub_x = t.Tensor("float16", (tile,), name="ub_x", scope=tik.scope_ubuf)
+        ub_y = t.Tensor("float16", (tile,), name="ub_y", scope=tik.scope_ubuf)
 
-        offset = bid * per_core
-        _tik_data_move_in(t, ub_x, gm_x[offset], per_core)
+        mask, repeat = _vec_repeat_params(tile)
+        with t.for_range(0, num_tiles) as ti:
+            offset = bid * per_core + ti * tile
+            _tik_data_move_in(t, ub_x, gm_x[offset], tile)
+            t.vec_relu(mask, ub_y, ub_x, repeat, 1, 1)
+            _tik_data_move_out(t, gm_y[offset], ub_y, tile)
 
-        mask, repeat = _vec_repeat_params(per_core)
-        t.vec_relu(mask, ub_y, ub_x, repeat, 1, 1)
-
-        _tik_data_move_out(t, gm_y[offset], ub_y, per_core)
-
-    return t, f"relu_{rows}x{cols}"
+    return t, f"relu_{rows}x{cols}", [gm_x], [gm_y]
 
 
 def build_silu_kernel(rows: int, cols: int) -> tuple:
-    """SiLU(x) = x * sigmoid(x).
-
-    Two compute passes over data:
-      1. sigmoid(x) → tmp
-      2. x * tmp → out
-    Plus load x, store out.
-    """
+    """SiLU(x) = x * sigmoid(x). UB-tiled."""
     t = tik.Tik(disable_debug=False)
-    total = rows * cols
-    per_core = math.ceil(total / BLOCK_DIM)
-    per_core = math.ceil(per_core / 16) * 16
+    total, per_core, tile, num_tiles = _tile_dims(rows, cols)
 
     gm_x = t.Tensor("float16", (total,), name="gm_x", scope=tik.scope_gm)
     gm_y = t.Tensor("float16", (total,), name="gm_y", scope=tik.scope_gm)
 
     with t.for_range(0, BLOCK_DIM, block_num=BLOCK_DIM) as bid:
-        ub_x = t.Tensor("float16", (per_core,), name="ub_x", scope=tik.scope_ubuf)
-        ub_tmp = t.Tensor("float16", (per_core,), name="ub_tmp", scope=tik.scope_ubuf)
-        ub_y = t.Tensor("float16", (per_core,), name="ub_y", scope=tik.scope_ubuf)
+        ub_x = t.Tensor("float16", (tile,), name="ub_x", scope=tik.scope_ubuf)
+        ub_tmp = t.Tensor("float16", (tile,), name="ub_tmp", scope=tik.scope_ubuf)
+        ub_y = t.Tensor("float16", (tile,), name="ub_y", scope=tik.scope_ubuf)
 
-        offset = bid * per_core
-        _tik_data_move_in(t, ub_x, gm_x[offset], per_core)
+        mask, repeat = _vec_repeat_params(tile)
+        with t.for_range(0, num_tiles) as ti:
+            offset = bid * per_core + ti * tile
+            _tik_data_move_in(t, ub_x, gm_x[offset], tile)
+            t.vec_sigmoid(mask, ub_tmp, ub_x, repeat, 1, 1)
+            t.vec_mul(mask, ub_y, ub_x, ub_tmp, repeat, 1, 1, 1)
+            _tik_data_move_out(t, gm_y[offset], ub_y, tile)
 
-        mask, repeat = _vec_repeat_params(per_core)
-        # sigmoid(x) → tmp
-        t.vec_sigmoid(mask, ub_tmp, ub_x, repeat, 1, 1)
-        # x * sigmoid(x) → y
-        t.vec_mul(mask, ub_y, ub_x, ub_tmp, repeat, 1, 1, 1)
-
-        _tik_data_move_out(t, gm_y[offset], ub_y, per_core)
-
-    return t, f"silu_{rows}x{cols}"
+    return t, f"silu_{rows}x{cols}", [gm_x], [gm_y]
 
 
 def build_gelu_kernel(rows: int, cols: int) -> tuple:
-    """GELU(x) ≈ 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
-
-    Approximated as: x * sigmoid(1.702 * x) (sigmoidal GELU).
-    Two-pass like SiLU but with a scalar multiply first.
-    """
+    """Sigmoidal GELU ≈ x * sigmoid(1.702 * x). UB-tiled."""
     t = tik.Tik(disable_debug=False)
-    total = rows * cols
-    per_core = math.ceil(total / BLOCK_DIM)
-    per_core = math.ceil(per_core / 16) * 16
+    total, per_core, tile, num_tiles = _tile_dims(rows, cols)
 
     gm_x = t.Tensor("float16", (total,), name="gm_x", scope=tik.scope_gm)
     gm_y = t.Tensor("float16", (total,), name="gm_y", scope=tik.scope_gm)
 
     with t.for_range(0, BLOCK_DIM, block_num=BLOCK_DIM) as bid:
-        ub_x = t.Tensor("float16", (per_core,), name="ub_x", scope=tik.scope_ubuf)
-        ub_tmp = t.Tensor("float16", (per_core,), name="ub_tmp", scope=tik.scope_ubuf)
-        ub_y = t.Tensor("float16", (per_core,), name="ub_y", scope=tik.scope_ubuf)
+        ub_x = t.Tensor("float16", (tile,), name="ub_x", scope=tik.scope_ubuf)
+        ub_tmp = t.Tensor("float16", (tile,), name="ub_tmp", scope=tik.scope_ubuf)
+        ub_y = t.Tensor("float16", (tile,), name="ub_y", scope=tik.scope_ubuf)
 
-        offset = bid * per_core
-        _tik_data_move_in(t, ub_x, gm_x[offset], per_core)
+        mask, repeat = _vec_repeat_params(tile)
+        with t.for_range(0, num_tiles) as ti:
+            offset = bid * per_core + ti * tile
+            _tik_data_move_in(t, ub_x, gm_x[offset], tile)
+            t.vec_muls(mask, ub_tmp, ub_x, 1.702, repeat, 1, 1)
+            t.vec_sigmoid(mask, ub_tmp, ub_tmp, repeat, 1, 1)
+            t.vec_mul(mask, ub_y, ub_x, ub_tmp, repeat, 1, 1, 1)
+            _tik_data_move_out(t, gm_y[offset], ub_y, tile)
 
-        mask, repeat = _vec_repeat_params(per_core)
-        # 1.702 * x → tmp
-        t.vec_muls(mask, ub_tmp, ub_x, 1.702, repeat, 1, 1)
-        # sigmoid(1.702*x) → tmp
-        t.vec_sigmoid(mask, ub_tmp, ub_tmp, repeat, 1, 1)
-        # x * sigmoid(1.702*x) → y
-        t.vec_mul(mask, ub_y, ub_x, ub_tmp, repeat, 1, 1, 1)
-
-        _tik_data_move_out(t, gm_y[offset], ub_y, per_core)
-
-    return t, f"gelu_{rows}x{cols}"
+    return t, f"gelu_{rows}x{cols}", [gm_x], [gm_y]
 
 
 def build_layernorm_kernel(rows: int, cols: int) -> tuple:
@@ -410,7 +456,7 @@ def build_layernorm_kernel(rows: int, cols: int) -> tuple:
             # Write output
             t.data_move(gm_y[row_offset, 0], ub_y, 0, 1, burst_cols, 0, 0)
 
-    return t, f"layernorm_{rows}x{cols}"
+    return t, f"layernorm_{rows}x{cols}", [gm_x, gm_gamma, gm_beta], [gm_y]
 
 
 def build_softmax_kernel(rows: int, cols: int) -> tuple:
@@ -459,7 +505,7 @@ def build_softmax_kernel(rows: int, cols: int) -> tuple:
             # Write output
             t.data_move(gm_y[row_offset, 0], ub_y, 0, 1, burst_cols, 0, 0)
 
-    return t, f"softmax_{rows}x{cols}"
+    return t, f"softmax_{rows}x{cols}", [gm_x], [gm_y]
 
 
 def build_rope_kernel(rows: int, cols: int) -> tuple:
@@ -525,7 +571,7 @@ def build_rope_kernel(rows: int, cols: int) -> tuple:
             t.data_move(gm_y[row_offset, 0], ub_y0, 0, 1, burst_half, 0, 0)
             t.data_move(gm_y[row_offset, half_cols], ub_y1, 0, 1, burst_half, 0, 0)
 
-    return t, f"rope_{rows}x{cols}"
+    return t, f"rope_{rows}x{cols}", [gm_x, gm_cos, gm_sin], [gm_y]
 
 
 # ------------------------------------------------------------------ #
@@ -576,7 +622,7 @@ def build_matmul_kernel(M: int, K: int, N: int) -> tuple:
             },
         )
 
-    return t, f"matmul_{M}x{K}x{N}"
+    return t, f"matmul_{M}x{K}x{N}", [gm_a, gm_b], [gm_c]
 
 
 # ------------------------------------------------------------------ #
@@ -603,35 +649,85 @@ CUBE_BUILDERS = {
 # Runner
 # ------------------------------------------------------------------ #
 
-def run_ca_sim(t, kernel_name: str, dump_path: str) -> list[PipeStats]:
-    """Compile TIK kernel and run through CA simulator."""
+_TIK_TO_NP_DTYPE = {
+    "float16": "float16",
+    "float32": "float32",
+    "int32": "int32",
+    "int8": "int8",
+    "uint8": "uint8",
+}
+
+
+def _tik_tensor_shape(tensor) -> tuple:
+    """Extract a concrete shape tuple from a TIK Tensor."""
+    shape = tensor.shape
+    out = []
+    for d in shape:
+        out.append(int(d))
+    return tuple(out)
+
+
+def _tik_tensor_dtype(tensor) -> str:
+    dt = tensor.dtype
+    return _TIK_TO_NP_DTYPE.get(dt, dt)
+
+
+def run_ca_sim(t, kernel_name: str, dump_path: str,
+               input_tensors: list, output_tensors: list) -> list[PipeStats]:
+    """Compile TIK kernel and run through CA simulator.
+
+    Parameters
+    ----------
+    t : tik.Tik
+        TIK instance with the kernel program built up.
+    kernel_name : str
+        Name used for BuildCCE output (.o and .json in ./kernel_meta/).
+    dump_path : str
+        Directory for CA simulator dump output.
+    input_tensors, output_tensors : list
+        Lists of GM TIK Tensors that are kernel params (in order).
+    """
+    import numpy as np
+    from op_test_frame.common.ascend_tbe_op import AscendOpKernel, AscendOpKernelRunner
+
     os.makedirs(dump_path, exist_ok=True)
 
-    # Build the kernel binary
+    # Build the kernel binary. TIK writes ./kernel_meta/<kernel_name>.o + .json.
     t.BuildCCE(
         kernel_name=kernel_name,
-        postfix=SOC_VERSION,
-        inputs=[],
-        outputs=[],
+        inputs=list(input_tensors),
+        outputs=list(output_tensors),
     )
+    bin_path = os.path.join("kernel_meta", f"{kernel_name}.o")
+    json_path = os.path.join("kernel_meta", f"{kernel_name}.json")
 
-    # Run on CA simulator
-    from op_test_frame.rt.op_ut_run import AscendOpKernelRunner
-    runner = AscendOpKernelRunner(
+    # Derive input/output info lists from TIK tensor metadata.
+    input_info_list = []
+    input_data_list = []
+    for tensor in input_tensors:
+        shape = _tik_tensor_shape(tensor)
+        dtype = _tik_tensor_dtype(tensor)
+        np_data = np.random.uniform(-1.0, 1.0, size=shape).astype(dtype)
+        input_info_list.append({"shape": shape, "dtype": dtype, "value": np_data})
+        input_data_list.append(np_data)
+
+    output_info_list = []
+    for tensor in output_tensors:
+        shape = _tik_tensor_shape(tensor)
+        dtype = _tik_tensor_dtype(tensor)
+        output_info_list.append({"shape": shape, "dtype": dtype})
+
+    op_kernel = AscendOpKernel(bin_path, json_path)
+    op_kernel.set_input_info(input_info_list)
+    op_kernel.set_output_info(output_info_list)
+
+    with AscendOpKernelRunner(
         simulator_mode="ca",
         soc_version=SOC_VERSION,
         simulator_lib_path=SIMULATOR_LIB,
         simulator_dump_path=dump_path,
-    )
-
-    # Create feed dict with random data
-    import numpy as np
-    feed_dict = {}
-    for tensor in t.get_input_tensors():
-        shape = tensor.shape
-        feed_dict[tensor.name] = np.random.randn(*shape).astype(np.float16)
-
-    runner.run(t, feed_dict)
+    ) as runner:
+        runner.run(op_kernel, inputs=input_data_list, block_dim=BLOCK_DIM)
 
     # Parse traces
     return parse_ca_trace(dump_path, BLOCK_DIM)
@@ -668,8 +764,8 @@ def profile_vector_ops(ops: list[str], output_rows: list) -> None:
                 shutil.rmtree(dump_path)
 
             try:
-                t, kname = builder(rows, cols)
-                core_stats = run_ca_sim(t, kname, dump_path)
+                t, kname, inputs, outputs = builder(rows, cols)
+                core_stats = run_ca_sim(t, kname, dump_path, inputs, outputs)
                 agg = aggregate_core_stats(core_stats)
 
                 # Compute effective memory passes
@@ -697,8 +793,8 @@ def profile_vector_ops(ops: list[str], output_rows: list) -> None:
                 print(f"OK  total={agg.total_cycles}  MTE2={agg.mte2_cycles}  "
                       f"MTE3={agg.mte3_cycles}  VEC={agg.vector_cycles}  [{bottleneck}]")
 
-            except Exception as e:
-                print(f"FAILED: {e}")
+            except BaseException as e:
+                print(f"FAILED: {type(e).__name__}: {e}")
                 continue
 
 
@@ -713,8 +809,8 @@ def profile_cube_ops(output_rows: list) -> None:
             shutil.rmtree(dump_path)
 
         try:
-            t, kname = build_matmul_kernel(M, K, N)
-            core_stats = run_ca_sim(t, kname, dump_path)
+            t, kname, inputs, outputs = build_matmul_kernel(M, K, N)
+            core_stats = run_ca_sim(t, kname, dump_path, inputs, outputs)
             agg = aggregate_core_stats(core_stats)
 
             total_mte = agg.mte2_cycles + agg.mte3_cycles
@@ -835,6 +931,7 @@ def save_results(results: list[ProfilingResult], output_path: str) -> None:
 # ------------------------------------------------------------------ #
 
 def main():
+    global BLOCK_DIM
     parser = argparse.ArgumentParser(description="CA simulator profiling for NPU calibration")
     parser.add_argument("--ops", default="all",
                         help="Comma-separated op types or 'all' / 'vector' / 'cube'")
@@ -842,10 +939,16 @@ def main():
                         help="Output CSV path")
     parser.add_argument("--block-dim", type=int, default=BLOCK_DIM,
                         help=f"Number of AI cores (default: {BLOCK_DIM})")
+    parser.add_argument("--shapes", default="all",
+                        help="'all' or 'small' for a single smoke-test shape")
     args = parser.parse_args()
 
-    global BLOCK_DIM
     BLOCK_DIM = args.block_dim
+
+    if args.shapes == "small":
+        global VECTOR_SHAPES, MATMUL_SHAPES
+        VECTOR_SHAPES = [(1, 4096)]
+        MATMUL_SHAPES = [(256, 256, 256)]
 
     # Determine which ops to profile
     if args.ops == "all":

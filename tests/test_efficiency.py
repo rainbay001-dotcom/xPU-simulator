@@ -96,10 +96,12 @@ def test_npu_has_efficiency_factors():
     assert ASCEND_910C.get_efficiency("cube_bf16") == 0.59
     assert ASCEND_910C.get_efficiency("vector") == 0.80
     assert ASCEND_910C.get_efficiency("memory") == 0.71
-    # Both share static overheads
+    # Both share static cube overhead; vector floor differs slightly
+    # (910B calibrated to CA sim ~3000 cycle floor = 1.7us @ 1.8GHz).
     for hw in [ASCEND_910B, ASCEND_910C]:
         assert hw.get_efficiency("static_cube_us") == 5.0
-        assert hw.get_efficiency("static_vector_us") == 2.0
+    assert ASCEND_910B.get_efficiency("static_vector_us") == 1.7
+    assert ASCEND_910C.get_efficiency("static_vector_us") == 2.0
 
 
 def test_npu_efficiency_slows_matmul():

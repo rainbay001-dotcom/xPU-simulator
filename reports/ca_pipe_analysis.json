@@ -1,0 +1,1766 @@
+[
+  {
+    "kernel": "add_1024x4096",
+    "total_cycles": 49942,
+    "pipe_busy_cycles": {
+      "SCALAR": 976,
+      "VEC": 1250,
+      "MTE1": 0,
+      "MTE2": 971,
+      "MTE3": 744,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 1888,
+      "VEC": 1312,
+      "MTE1": 0,
+      "MTE2": 1016,
+      "MTE3": 760,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.019542669496616073,
+      "VEC": 0.025029033679067718,
+      "MTE1": 0.0,
+      "MTE2": 0.019442553361899803,
+      "MTE3": 0.014897280845781105,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.0789115373833647,
+    "cycles_with_any_activity": 2895
+  },
+  {
+    "kernel": "add_128x4096",
+    "total_cycles": 8968,
+    "pipe_busy_cycles": {
+      "SCALAR": 96,
+      "VEC": 144,
+      "MTE1": 0,
+      "MTE2": 86,
+      "MTE3": 73,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 432,
+      "VEC": 192,
+      "MTE1": 0,
+      "MTE2": 120,
+      "MTE3": 88,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.010704727921498661,
+      "VEC": 0.016057091882247992,
+      "MTE1": 0.0,
+      "MTE2": 0.00958965209634255,
+      "MTE3": 0.008140053523639607,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.04449152542372881,
+    "cycles_with_any_activity": 287
+  },
+  {
+    "kernel": "add_16x4096",
+    "total_cycles": 3615,
+    "pipe_busy_cycles": {
+      "SCALAR": 66,
+      "VEC": 38,
+      "MTE1": 0,
+      "MTE2": 10,
+      "MTE3": 12,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 336,
+      "VEC": 72,
+      "MTE1": 0,
+      "MTE2": 24,
+      "MTE3": 16,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.018257261410788383,
+      "VEC": 0.010511756569847857,
+      "MTE1": 0.0,
+      "MTE2": 0.0027662517289073307,
+      "MTE3": 0.0033195020746887966,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.034854771784232366,
+    "cycles_with_any_activity": 87
+  },
+  {
+    "kernel": "add_1x4096",
+    "total_cycles": 3594,
+    "pipe_busy_cycles": {
+      "SCALAR": 65,
+      "VEC": 34,
+      "MTE1": 0,
+      "MTE2": 10,
+      "MTE3": 13,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 336,
+      "VEC": 72,
+      "MTE1": 0,
+      "MTE2": 24,
+      "MTE3": 16,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.018085698386199223,
+      "VEC": 0.009460211463550361,
+      "MTE1": 0.0,
+      "MTE2": 0.0027824151363383415,
+      "MTE3": 0.003617139677239844,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.03394546466332777,
+    "cycles_with_any_activity": 85
+  },
+  {
+    "kernel": "add_1x8192",
+    "total_cycles": 3604,
+    "pipe_busy_cycles": {
+      "SCALAR": 70,
+      "VEC": 38,
+      "MTE1": 0,
+      "MTE2": 12,
+      "MTE3": 14,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 336,
+      "VEC": 72,
+      "MTE1": 0,
+      "MTE2": 24,
+      "MTE3": 16,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.019422863485016647,
+      "VEC": 0.010543840177580466,
+      "MTE1": 0.0,
+      "MTE2": 0.003329633740288568,
+      "MTE3": 0.00388457269700333,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.03718091009988901,
+    "cycles_with_any_activity": 90
+  },
+  {
+    "kernel": "add_2048x4096",
+    "total_cycles": 96590,
+    "pipe_busy_cycles": {
+      "SCALAR": 2023,
+      "VEC": 2542,
+      "MTE1": 0,
+      "MTE2": 2013,
+      "MTE3": 1517,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 3424,
+      "VEC": 2592,
+      "MTE1": 0,
+      "MTE2": 2040,
+      "MTE3": 1528,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.020944197121855263,
+      "VEC": 0.02631742416399213,
+      "MTE1": 0.0,
+      "MTE2": 0.020840666735686925,
+      "MTE3": 0.01570555958173724,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.08380784760327156,
+    "cycles_with_any_activity": 5998
+  },
+  {
+    "kernel": "add_256x4096",
+    "total_cycles": 15020,
+    "pipe_busy_cycles": {
+      "SCALAR": 179,
+      "VEC": 312,
+      "MTE1": 0,
+      "MTE2": 217,
+      "MTE3": 173,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 560,
+      "VEC": 352,
+      "MTE1": 0,
+      "MTE2": 248,
+      "MTE3": 184,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.011917443408788283,
+      "VEC": 0.02077230359520639,
+      "MTE1": 0.0,
+      "MTE2": 0.014447403462050598,
+      "MTE3": 0.01151797603195739,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.05865512649800266,
+    "cycles_with_any_activity": 619
+  },
+  {
+    "kernel": "add_4x4096",
+    "total_cycles": 3617,
+    "pipe_busy_cycles": {
+      "SCALAR": 77,
+      "VEC": 48,
+      "MTE1": 0,
+      "MTE2": 14,
+      "MTE3": 14,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 336,
+      "VEC": 72,
+      "MTE1": 0,
+      "MTE2": 24,
+      "MTE3": 16,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.021288360519767763,
+      "VEC": 0.013270666298037047,
+      "MTE1": 0.0,
+      "MTE2": 0.003870611003594139,
+      "MTE3": 0.003870611003594139,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.042300248824993086,
+    "cycles_with_any_activity": 101
+  },
+  {
+    "kernel": "add_512x4096",
+    "total_cycles": 26783,
+    "pipe_busy_cycles": {
+      "SCALAR": 463,
+      "VEC": 616,
+      "MTE1": 0,
+      "MTE2": 465,
+      "MTE3": 359,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 1120,
+      "VEC": 672,
+      "MTE1": 0,
+      "MTE2": 504,
+      "MTE3": 376,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.01728708509128925,
+      "VEC": 0.02299966396594855,
+      "MTE1": 0.0,
+      "MTE2": 0.017361759324944926,
+      "MTE3": 0.013404024941194042,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.07105253332337677,
+    "cycles_with_any_activity": 1386
+  },
+  {
+    "kernel": "add_64x4096",
+    "total_cycles": 5438,
+    "pipe_busy_cycles": {
+      "SCALAR": 80,
+      "VEC": 86,
+      "MTE1": 0,
+      "MTE2": 42,
+      "MTE3": 35,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 368,
+      "VEC": 112,
+      "MTE1": 0,
+      "MTE2": 56,
+      "MTE3": 40,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.01471129091577786,
+      "VEC": 0.0158146377344612,
+      "MTE1": 0.0,
+      "MTE2": 0.007723427730783376,
+      "MTE3": 0.006436189775652814,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.04468554615667525,
+    "cycles_with_any_activity": 159
+  },
+  {
+    "kernel": "cube_mini_128x128x128",
+    "total_cycles": 0,
+    "pipe_busy_cycles": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.0,
+      "VEC": 0.0,
+      "MTE1": 0.0,
+      "MTE2": 0.0,
+      "MTE3": 0.0,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.0,
+    "cycles_with_any_activity": 0
+  },
+  {
+    "kernel": "cube_mini_128x128x64",
+    "total_cycles": 0,
+    "pipe_busy_cycles": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.0,
+      "VEC": 0.0,
+      "MTE1": 0.0,
+      "MTE2": 0.0,
+      "MTE3": 0.0,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.0,
+    "cycles_with_any_activity": 0
+  },
+  {
+    "kernel": "cube_mini_128x256x64",
+    "total_cycles": 0,
+    "pipe_busy_cycles": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.0,
+      "VEC": 0.0,
+      "MTE1": 0.0,
+      "MTE2": 0.0,
+      "MTE3": 0.0,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.0,
+    "cycles_with_any_activity": 0
+  },
+  {
+    "kernel": "cube_mini_128x512x64",
+    "total_cycles": 0,
+    "pipe_busy_cycles": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.0,
+      "VEC": 0.0,
+      "MTE1": 0.0,
+      "MTE2": 0.0,
+      "MTE3": 0.0,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.0,
+    "cycles_with_any_activity": 0
+  },
+  {
+    "kernel": "cube_mini_16x16x16",
+    "total_cycles": 0,
+    "pipe_busy_cycles": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.0,
+      "VEC": 0.0,
+      "MTE1": 0.0,
+      "MTE2": 0.0,
+      "MTE3": 0.0,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.0,
+    "cycles_with_any_activity": 0
+  },
+  {
+    "kernel": "cube_mini_256x256x128",
+    "total_cycles": 0,
+    "pipe_busy_cycles": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.0,
+      "VEC": 0.0,
+      "MTE1": 0.0,
+      "MTE2": 0.0,
+      "MTE3": 0.0,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.0,
+    "cycles_with_any_activity": 0
+  },
+  {
+    "kernel": "cube_mini_256x256x256",
+    "total_cycles": 0,
+    "pipe_busy_cycles": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.0,
+      "VEC": 0.0,
+      "MTE1": 0.0,
+      "MTE2": 0.0,
+      "MTE3": 0.0,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.0,
+    "cycles_with_any_activity": 0
+  },
+  {
+    "kernel": "cube_mini_32x32x32",
+    "total_cycles": 0,
+    "pipe_busy_cycles": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.0,
+      "VEC": 0.0,
+      "MTE1": 0.0,
+      "MTE2": 0.0,
+      "MTE3": 0.0,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.0,
+    "cycles_with_any_activity": 0
+  },
+  {
+    "kernel": "cube_mini_64x64x64",
+    "total_cycles": 0,
+    "pipe_busy_cycles": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 0,
+      "VEC": 0,
+      "MTE1": 0,
+      "MTE2": 0,
+      "MTE3": 0,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.0,
+      "VEC": 0.0,
+      "MTE1": 0.0,
+      "MTE2": 0.0,
+      "MTE3": 0.0,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.0,
+    "cycles_with_any_activity": 0
+  },
+  {
+    "kernel": "mul_1024x4096",
+    "total_cycles": 50352,
+    "pipe_busy_cycles": {
+      "SCALAR": 965,
+      "VEC": 1246,
+      "MTE1": 0,
+      "MTE2": 969,
+      "MTE3": 739,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 1888,
+      "VEC": 1312,
+      "MTE1": 0,
+      "MTE2": 1016,
+      "MTE3": 760,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.019165077851922466,
+      "VEC": 0.024745789640927867,
+      "MTE1": 0.0,
+      "MTE2": 0.01924451858913251,
+      "MTE3": 0.014676676199555132,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.07783206228153797,
+    "cycles_with_any_activity": 2880
+  },
+  {
+    "kernel": "mul_128x4096",
+    "total_cycles": 8805,
+    "pipe_busy_cycles": {
+      "SCALAR": 101,
+      "VEC": 154,
+      "MTE1": 0,
+      "MTE2": 93,
+      "MTE3": 78,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 432,
+      "VEC": 192,
+      "MTE1": 0,
+      "MTE2": 120,
+      "MTE3": 88,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.011470755252697331,
+      "VEC": 0.0174900624645088,
+      "MTE1": 0.0,
+      "MTE2": 0.010562180579216355,
+      "MTE3": 0.008858603066439524,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.04838160136286201,
+    "cycles_with_any_activity": 300
+  },
+  {
+    "kernel": "mul_16x4096",
+    "total_cycles": 3615,
+    "pipe_busy_cycles": {
+      "SCALAR": 74,
+      "VEC": 47,
+      "MTE1": 0,
+      "MTE2": 14,
+      "MTE3": 14,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 336,
+      "VEC": 72,
+      "MTE1": 0,
+      "MTE2": 24,
+      "MTE3": 16,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.020470262793914246,
+      "VEC": 0.013001383125864454,
+      "MTE1": 0.0,
+      "MTE2": 0.003872752420470263,
+      "MTE3": 0.003872752420470263,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.041217150760719225,
+    "cycles_with_any_activity": 97
+  },
+  {
+    "kernel": "mul_1x4096",
+    "total_cycles": 3610,
+    "pipe_busy_cycles": {
+      "SCALAR": 72,
+      "VEC": 46,
+      "MTE1": 0,
+      "MTE2": 12,
+      "MTE3": 14,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 336,
+      "VEC": 72,
+      "MTE1": 0,
+      "MTE2": 24,
+      "MTE3": 16,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.019944598337950138,
+      "VEC": 0.012742382271468145,
+      "MTE1": 0.0,
+      "MTE2": 0.0033240997229916896,
+      "MTE3": 0.003878116343490305,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.039889196675900275,
+    "cycles_with_any_activity": 98
+  },
+  {
+    "kernel": "mul_1x8192",
+    "total_cycles": 3595,
+    "pipe_busy_cycles": {
+      "SCALAR": 77,
+      "VEC": 45,
+      "MTE1": 0,
+      "MTE2": 15,
+      "MTE3": 15,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 336,
+      "VEC": 72,
+      "MTE1": 0,
+      "MTE2": 24,
+      "MTE3": 16,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.02141863699582754,
+      "VEC": 0.012517385257301807,
+      "MTE1": 0.0,
+      "MTE2": 0.004172461752433936,
+      "MTE3": 0.004172461752433936,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.04228094575799722,
+    "cycles_with_any_activity": 102
+  },
+  {
+    "kernel": "mul_2048x4096",
+    "total_cycles": 96914,
+    "pipe_busy_cycles": {
+      "SCALAR": 1997,
+      "VEC": 2545,
+      "MTE1": 0,
+      "MTE2": 2006,
+      "MTE3": 1513,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 3424,
+      "VEC": 2592,
+      "MTE1": 0,
+      "MTE2": 2040,
+      "MTE3": 1528,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.02060589801267103,
+      "VEC": 0.02626039581484615,
+      "MTE1": 0.0,
+      "MTE2": 0.020698763852487773,
+      "MTE3": 0.015611779515859422,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.08317683719586437,
+    "cycles_with_any_activity": 5907
+  },
+  {
+    "kernel": "mul_256x4096",
+    "total_cycles": 14864,
+    "pipe_busy_cycles": {
+      "SCALAR": 189,
+      "VEC": 295,
+      "MTE1": 0,
+      "MTE2": 202,
+      "MTE3": 162,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 560,
+      "VEC": 352,
+      "MTE1": 0,
+      "MTE2": 248,
+      "MTE3": 184,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.012715285252960172,
+      "VEC": 0.019846609257265876,
+      "MTE1": 0.0,
+      "MTE2": 0.013589881593110873,
+      "MTE3": 0.010898815931108719,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.05705059203444564,
+    "cycles_with_any_activity": 599
+  },
+  {
+    "kernel": "mul_4x4096",
+    "total_cycles": 3609,
+    "pipe_busy_cycles": {
+      "SCALAR": 66,
+      "VEC": 36,
+      "MTE1": 0,
+      "MTE2": 10,
+      "MTE3": 14,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 336,
+      "VEC": 72,
+      "MTE1": 0,
+      "MTE2": 24,
+      "MTE3": 16,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.01828761429758936,
+      "VEC": 0.00997506234413965,
+      "MTE1": 0.0,
+      "MTE2": 0.002770850651149903,
+      "MTE3": 0.0038791909116098642,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.034912718204488775,
+    "cycles_with_any_activity": 90
+  },
+  {
+    "kernel": "mul_512x4096",
+    "total_cycles": 27301,
+    "pipe_busy_cycles": {
+      "SCALAR": 463,
+      "VEC": 615,
+      "MTE1": 0,
+      "MTE2": 463,
+      "MTE3": 357,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 1120,
+      "VEC": 672,
+      "MTE1": 0,
+      "MTE2": 504,
+      "MTE3": 376,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.016959085747774806,
+      "VEC": 0.02252664737555401,
+      "MTE1": 0.0,
+      "MTE2": 0.016959085747774806,
+      "MTE3": 0.013076444086297205,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.06952126295740083,
+    "cycles_with_any_activity": 1383
+  },
+  {
+    "kernel": "mul_64x4096",
+    "total_cycles": 5443,
+    "pipe_busy_cycles": {
+      "SCALAR": 70,
+      "VEC": 73,
+      "MTE1": 0,
+      "MTE2": 36,
+      "MTE3": 31,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 368,
+      "VEC": 112,
+      "MTE1": 0,
+      "MTE2": 56,
+      "MTE3": 40,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.012860554841080287,
+      "VEC": 0.013411721477126584,
+      "MTE1": 0.0,
+      "MTE2": 0.006613999632555576,
+      "MTE3": 0.005695388572478413,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.03858166452324086,
+    "cycles_with_any_activity": 141
+  },
+  {
+    "kernel": "relu_1024x4096",
+    "total_cycles": 35904,
+    "pipe_busy_cycles": {
+      "SCALAR": 759,
+      "VEC": 1212,
+      "MTE1": 0,
+      "MTE2": 728,
+      "MTE3": 732,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 1600,
+      "VEC": 1312,
+      "MTE1": 0,
+      "MTE2": 760,
+      "MTE3": 760,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.021139705882352942,
+      "VEC": 0.03375668449197861,
+      "MTE1": 0.0,
+      "MTE2": 0.020276292335115863,
+      "MTE3": 0.02038770053475936,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.09556038324420678,
+    "cycles_with_any_activity": 2440
+  },
+  {
+    "kernel": "relu_128x4096",
+    "total_cycles": 6783,
+    "pipe_busy_cycles": {
+      "SCALAR": 93,
+      "VEC": 155,
+      "MTE1": 0,
+      "MTE2": 72,
+      "MTE3": 80,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 376,
+      "VEC": 192,
+      "MTE1": 0,
+      "MTE2": 88,
+      "MTE3": 88,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.013710747456877488,
+      "VEC": 0.02285124576146248,
+      "MTE1": 0.0,
+      "MTE2": 0.010614772224679346,
+      "MTE3": 0.011794191360754828,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.05897095680377414,
+    "cycles_with_any_activity": 289
+  },
+  {
+    "kernel": "relu_16x4096",
+    "total_cycles": 2929,
+    "pipe_busy_cycles": {
+      "SCALAR": 67,
+      "VEC": 45,
+      "MTE1": 0,
+      "MTE2": 10,
+      "MTE3": 14,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 312,
+      "VEC": 72,
+      "MTE1": 0,
+      "MTE2": 16,
+      "MTE3": 16,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.022874701263229772,
+      "VEC": 0.015363605326049846,
+      "MTE1": 0.0,
+      "MTE2": 0.003414134516899966,
+      "MTE3": 0.004779788323659952,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.04643222942983954,
+    "cycles_with_any_activity": 90
+  },
+  {
+    "kernel": "relu_1x4096",
+    "total_cycles": 2927,
+    "pipe_busy_cycles": {
+      "SCALAR": 70,
+      "VEC": 46,
+      "MTE1": 0,
+      "MTE2": 11,
+      "MTE3": 13,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 312,
+      "VEC": 72,
+      "MTE1": 0,
+      "MTE2": 16,
+      "MTE3": 16,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.023915271609156134,
+      "VEC": 0.015715749914588316,
+      "MTE1": 0.0,
+      "MTE2": 0.0037581141100102495,
+      "MTE3": 0.004441407584557568,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.04783054321831227,
+    "cycles_with_any_activity": 93
+  },
+  {
+    "kernel": "relu_1x8192",
+    "total_cycles": 2918,
+    "pipe_busy_cycles": {
+      "SCALAR": 67,
+      "VEC": 43,
+      "MTE1": 0,
+      "MTE2": 9,
+      "MTE3": 15,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 312,
+      "VEC": 72,
+      "MTE1": 0,
+      "MTE2": 16,
+      "MTE3": 16,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.022960932145305004,
+      "VEC": 0.014736120630568882,
+      "MTE1": 0.0,
+      "MTE2": 0.003084304318026045,
+      "MTE3": 0.005140507196710075,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.04592186429061001,
+    "cycles_with_any_activity": 92
+  },
+  {
+    "kernel": "relu_2048x4096",
+    "total_cycles": 69283,
+    "pipe_busy_cycles": {
+      "SCALAR": 1514,
+      "VEC": 2484,
+      "MTE1": 0,
+      "MTE2": 1491,
+      "MTE3": 1495,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 2880,
+      "VEC": 2592,
+      "MTE1": 0,
+      "MTE2": 1528,
+      "MTE3": 1528,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.021852402465251216,
+      "VEC": 0.035852950940346115,
+      "MTE1": 0.0,
+      "MTE2": 0.02152043069728505,
+      "MTE3": 0.021578164917800905,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.10080394902068328,
+    "cycles_with_any_activity": 5257
+  },
+  {
+    "kernel": "relu_256x4096",
+    "total_cycles": 10714,
+    "pipe_busy_cycles": {
+      "SCALAR": 140,
+      "VEC": 319,
+      "MTE1": 0,
+      "MTE2": 173,
+      "MTE3": 180,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 472,
+      "VEC": 352,
+      "MTE1": 0,
+      "MTE2": 184,
+      "MTE3": 184,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.013067015120403211,
+      "VEC": 0.029774127310061602,
+      "MTE1": 0.0,
+      "MTE2": 0.016147097255926824,
+      "MTE3": 0.016800448011946984,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.07578868769833862,
+    "cycles_with_any_activity": 566
+  },
+  {
+    "kernel": "relu_4x4096",
+    "total_cycles": 2925,
+    "pipe_busy_cycles": {
+      "SCALAR": 67,
+      "VEC": 40,
+      "MTE1": 0,
+      "MTE2": 11,
+      "MTE3": 13,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 312,
+      "VEC": 72,
+      "MTE1": 0,
+      "MTE2": 16,
+      "MTE3": 16,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.022905982905982905,
+      "VEC": 0.013675213675213675,
+      "MTE1": 0.0,
+      "MTE2": 0.0037606837606837607,
+      "MTE3": 0.0044444444444444444,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.044786324786324785,
+    "cycles_with_any_activity": 84
+  },
+  {
+    "kernel": "relu_512x4096",
+    "total_cycles": 18866,
+    "pipe_busy_cycles": {
+      "SCALAR": 394,
+      "VEC": 566,
+      "MTE1": 0,
+      "MTE2": 340,
+      "MTE3": 343,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 960,
+      "VEC": 672,
+      "MTE1": 0,
+      "MTE2": 376,
+      "MTE3": 376,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.02088413018127849,
+      "VEC": 0.030001060108131028,
+      "MTE1": 0.0,
+      "MTE2": 0.018021838227499205,
+      "MTE3": 0.01818085444715361,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.08708788296406234,
+    "cycles_with_any_activity": 1208
+  },
+  {
+    "kernel": "relu_64x4096",
+    "total_cycles": 4200,
+    "pipe_busy_cycles": {
+      "SCALAR": 64,
+      "VEC": 70,
+      "MTE1": 0,
+      "MTE2": 26,
+      "MTE3": 29,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 328,
+      "VEC": 112,
+      "MTE1": 0,
+      "MTE2": 40,
+      "MTE3": 40,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.015238095238095238,
+      "VEC": 0.016666666666666666,
+      "MTE1": 0.0,
+      "MTE2": 0.006190476190476191,
+      "MTE3": 0.006904761904761905,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.045,
+    "cycles_with_any_activity": 136
+  },
+  {
+    "kernel": "rope_1024x4096",
+    "total_cycles": 79113,
+    "pipe_busy_cycles": {
+      "SCALAR": 7470,
+      "VEC": 15242,
+      "MTE1": 0,
+      "MTE2": 5615,
+      "MTE3": 5868,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 10608,
+      "VEC": 18448,
+      "MTE1": 0,
+      "MTE2": 6144,
+      "MTE3": 6128,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.09442190284782526,
+      "VEC": 0.19266113028200169,
+      "MTE1": 0.0,
+      "MTE2": 0.0709744289813305,
+      "MTE3": 0.07417238633347238,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.43222984844462986,
+    "cycles_with_any_activity": 23228
+  },
+  {
+    "kernel": "rope_128x4096",
+    "total_cycles": 11210,
+    "pipe_busy_cycles": {
+      "SCALAR": 855,
+      "VEC": 1824,
+      "MTE1": 0,
+      "MTE2": 621,
+      "MTE3": 697,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 1640,
+      "VEC": 2320,
+      "MTE1": 0,
+      "MTE2": 768,
+      "MTE3": 752,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.07627118644067797,
+      "VEC": 0.16271186440677965,
+      "MTE1": 0.0,
+      "MTE2": 0.05539696699375558,
+      "MTE3": 0.062176628010704726,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.35655664585191793,
+    "cycles_with_any_activity": 2689
+  },
+  {
+    "kernel": "rope_16x4096",
+    "total_cycles": 2657,
+    "pipe_busy_cycles": {
+      "SCALAR": 80,
+      "VEC": 190,
+      "MTE1": 0,
+      "MTE2": 50,
+      "MTE3": 61,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 440,
+      "VEC": 304,
+      "MTE1": 0,
+      "MTE2": 96,
+      "MTE3": 80,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.030109145652992095,
+      "VEC": 0.07150922092585622,
+      "MTE1": 0.0,
+      "MTE2": 0.01881821603312006,
+      "MTE3": 0.022958223560406475,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.14339480617237485,
+    "cycles_with_any_activity": 285
+  },
+  {
+    "kernel": "rope_1x4096",
+    "total_cycles": 2034,
+    "pipe_busy_cycles": {
+      "SCALAR": 85,
+      "VEC": 102,
+      "MTE1": 0,
+      "MTE2": 22,
+      "MTE3": 30,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 384,
+      "VEC": 152,
+      "MTE1": 0,
+      "MTE2": 48,
+      "MTE3": 32,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.04178957718780728,
+      "VEC": 0.05014749262536873,
+      "MTE1": 0.0,
+      "MTE2": 0.010816125860373648,
+      "MTE3": 0.014749262536873156,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.11750245821042281,
+    "cycles_with_any_activity": 168
+  },
+  {
+    "kernel": "rope_1x8192",
+    "total_cycles": 2717,
+    "pipe_busy_cycles": {
+      "SCALAR": 81,
+      "VEC": 88,
+      "MTE1": 0,
+      "MTE2": 23,
+      "MTE3": 25,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 384,
+      "VEC": 152,
+      "MTE1": 0,
+      "MTE2": 48,
+      "MTE3": 32,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.02981229297018771,
+      "VEC": 0.032388663967611336,
+      "MTE1": 0.0,
+      "MTE2": 0.008465218991534781,
+      "MTE3": 0.009201324990798674,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.0798675009201325,
+    "cycles_with_any_activity": 150
+  },
+  {
+    "kernel": "rope_2048x4096",
+    "total_cycles": 156698,
+    "pipe_busy_cycles": {
+      "SCALAR": 14986,
+      "VEC": 30933,
+      "MTE1": 0,
+      "MTE2": 11426,
+      "MTE3": 11729,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 20848,
+      "VEC": 36880,
+      "MTE1": 0,
+      "MTE2": 12288,
+      "MTE3": 12272,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.09563619191055406,
+      "VEC": 0.1974051998111016,
+      "MTE1": 0.0,
+      "MTE2": 0.07291733142733156,
+      "MTE3": 0.07485098724935864,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.4408097103983459,
+    "cycles_with_any_activity": 46659
+  },
+  {
+    "kernel": "rope_256x4096",
+    "total_cycles": 20895,
+    "pipe_busy_cycles": {
+      "SCALAR": 1779,
+      "VEC": 3638,
+      "MTE1": 0,
+      "MTE2": 1337,
+      "MTE3": 1417,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 2920,
+      "VEC": 4624,
+      "MTE1": 0,
+      "MTE2": 1536,
+      "MTE3": 1520,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.08513998564249821,
+      "VEC": 0.17410863843024646,
+      "MTE1": 0.0,
+      "MTE2": 0.06398659966499162,
+      "MTE3": 0.06781526681024168,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.39105049054797797,
+    "cycles_with_any_activity": 5604
+  },
+  {
+    "kernel": "rope_4x4096",
+    "total_cycles": 2030,
+    "pipe_busy_cycles": {
+      "SCALAR": 78,
+      "VEC": 85,
+      "MTE1": 0,
+      "MTE2": 19,
+      "MTE3": 25,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 384,
+      "VEC": 152,
+      "MTE1": 0,
+      "MTE2": 48,
+      "MTE3": 32,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.03842364532019704,
+      "VEC": 0.04187192118226601,
+      "MTE1": 0.0,
+      "MTE2": 0.00935960591133005,
+      "MTE3": 0.012315270935960592,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.10197044334975369,
+    "cycles_with_any_activity": 147
+  },
+  {
+    "kernel": "rope_512x4096",
+    "total_cycles": 40301,
+    "pipe_busy_cycles": {
+      "SCALAR": 3539,
+      "VEC": 7232,
+      "MTE1": 0,
+      "MTE2": 2834,
+      "MTE3": 2871,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 5480,
+      "VEC": 9232,
+      "MTE1": 0,
+      "MTE2": 3072,
+      "MTE3": 3056,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.08781419815885462,
+      "VEC": 0.17944964144810302,
+      "MTE1": 0.0,
+      "MTE2": 0.07032083571127268,
+      "MTE3": 0.07123892707376989,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.4088236023920002,
+    "cycles_with_any_activity": 11259
+  },
+  {
+    "kernel": "rope_64x4096",
+    "total_cycles": 6351,
+    "pipe_busy_cycles": {
+      "SCALAR": 410,
+      "VEC": 884,
+      "MTE1": 0,
+      "MTE2": 293,
+      "MTE3": 329,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "pipe_instr_count": {
+      "SCALAR": 1000,
+      "VEC": 1168,
+      "MTE1": 0,
+      "MTE2": 384,
+      "MTE3": 368,
+      "CUBE": 0,
+      "FIXPIPE": 0,
+      "MTE": 0
+    },
+    "utilization": {
+      "SCALAR": 0.06455676271453314,
+      "VEC": 0.1391906786332861,
+      "MTE1": 0.0,
+      "MTE2": 0.04613446701306881,
+      "MTE3": 0.05180286569044245,
+      "CUBE": 0.0,
+      "FIXPIPE": 0.0,
+      "MTE": 0.0
+    },
+    "overlap_ratio": 0.3016847740513305,
+    "cycles_with_any_activity": 1309
+  }
+]

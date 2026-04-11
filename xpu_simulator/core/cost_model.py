@@ -24,6 +24,16 @@ class OpCost:
     bytes_accessed: int     # Total bytes read + written
     utilization: float      # Fraction of peak utilized (0-1)
 
+    # Optional per-pipe microarchitectural breakdown (NPU / CA-model style)
+    # Populated by backends that model pipe-level behavior. Values are the
+    # cycles each hardware pipe is busy, expressed in microseconds. They
+    # need not sum to latency_us — pipes overlap via double-buffering.
+    mte2_us: float = 0.0     # GM/L2 → L1/UB transfer engine
+    mte3_us: float = 0.0     # L1/UB → GM/L2 transfer engine
+    vec_us: float = 0.0      # VECTOR unit compute (elementwise/reduction)
+    cube_us: float = 0.0     # CUBE unit compute (matrix/conv)
+    scalar_us: float = 0.0   # SCALAR unit (orchestration, address calc)
+
     @property
     def arithmetic_intensity(self) -> float:
         if self.bytes_accessed == 0:

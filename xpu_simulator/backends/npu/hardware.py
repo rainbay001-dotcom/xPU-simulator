@@ -148,7 +148,7 @@ ASCEND_910B = AscendSpec(
         "vector": 0.80,
         "memory": 0.60,
         "static_cube_us": 5.0,    # per-CUBE-op overhead (dispatch, sync, etc.)
-        "static_vector_us": 2.0,  # per-VECTOR-op overhead
+        "static_vector_us": 1.7,  # per-VECTOR-op overhead (CA sim: ~3000 cycle floor ≈ 1.67us @ 1.8GHz)
     },
     interconnect=InterconnectSpec("HCCS", 392, 1.0),
 )

@@ -1,0 +1,90 @@
+====================================================================================================
+op            shape                   count     meas_us     pred_us   pred/meas         bound
+====================================================================================================
+Add           (1, 4096)                 100        1.34        2.01        1.50        memory
+Add           (1, 8192)                 100        1.44        2.03        1.41        memory
+Add           (16, 4096)                100        2.48        2.20        0.89        memory
+Add           (64, 4096)                100        2.92        2.82        0.97        memory
+Add           (256, 256)                 25        4.16        2.20        0.53        memory
+Add           (256, 4096)               100        3.86        5.28        1.37        memory
+Add           (512, 512)                 25        4.66        2.82        0.60        memory
+Add           (1024, 1024)               25        6.04        5.28        0.87        memory
+Add           (1024, 4096)              125        6.96       15.11        2.17        memory
+Add           (1024, 14336)              25       31.27       47.88        1.53        memory
+Add           (2048, 4096)              125       11.18       28.21        2.52        memory
+Add           (4096, 4096)              125       35.91       54.43        1.52        memory
+Gelu          (1, 4096)                  75        1.64        2.02        1.23        memory
+Gelu          (1, 8192)                  75        1.76        2.03        1.16        memory
+Gelu          (16, 4096)                 75        3.02        2.27        0.75        memory
+Gelu          (64, 4096)                 75        3.82        3.09        0.81        memory
+Gelu          (256, 256)                 25        3.06        2.27        0.74        memory
+Gelu          (256, 4096)                75        7.60        6.37        0.84        memory
+Gelu          (512, 512)                 25        3.74        3.09        0.83        memory
+Gelu          (1024, 1024)               25        7.34        6.37        0.87        memory
+Gelu          (1024, 4096)              100       21.61       19.48        0.90        memory
+Gelu          (1024, 14336)              25       68.22       63.17        0.93        memory
+Gelu          (2048, 4096)              100       40.37       36.95        0.92        memory
+Gelu          (4096, 4096)              100       77.58       71.91        0.93        memory
+LayerNormV3   (1, 4096)                  50        4.96        2.06        0.42        memory
+LayerNormV3   (1, 8192)                  50        4.46        2.12        0.48        memory
+LayerNormV3   (16, 4096)                 50        4.70        2.96        0.63        memory
+LayerNormV3   (64, 4096)                 50        6.80        5.82        0.86        memory
+LayerNormV3   (256, 4096)                50       18.84       17.29        0.92        memory
+LayerNormV3   (1024, 4096)               50       49.07       63.17        1.29        memory
+LayerNormV3   (2048, 4096)               50       91.28      124.33        1.36        memory
+LayerNormV3   (4096, 4096)               50      181.80      246.67        1.36        memory
+Mul           (1, 4096)                  50        1.46        2.01        1.38        memory
+Mul           (1, 8192)                  50        1.44        2.03        1.41        memory
+Mul           (16, 4096)                 50        2.48        2.20        0.89        memory
+Mul           (64, 4096)                 50        2.96        2.82        0.95        memory
+Mul           (256, 4096)                50        3.80        5.28        1.39        memory
+Mul           (1024, 4096)               50        6.88       15.11        2.20        memory
+Mul           (2048, 4096)               50       11.08       28.21        2.55        memory
+Mul           (4096, 4096)               50       75.02       54.43        0.73        memory
+Relu          (1, 4096)                  75        1.32        2.01        1.52        memory
+Relu          (1, 8192)                  75        1.30        2.02        1.55        memory
+Relu          (16, 4096)                 75        2.32        2.14        0.92        memory
+Relu          (64, 4096)                 75        2.74        2.55        0.93        memory
+Relu          (256, 256)                 25        2.38        2.14        0.90        memory
+Relu          (256, 4096)                75        3.26        4.18        1.28        memory
+Relu          (512, 512)                 25        2.72        2.55        0.94        memory
+Relu          (1024, 1024)               25        3.30        4.18        1.27        memory
+Relu          (1024, 4096)              100        5.22       10.74        2.06        memory
+Relu          (1024, 14336)              25       11.54       32.58        2.82        memory
+Relu          (2048, 4096)              100        7.70       19.48        2.53        memory
+Relu          (4096, 4096)              100       12.84       36.95        2.88        memory
+SoftmaxV2     (1, 4096)                  25        4.70        2.04        0.43        memory
+SoftmaxV2     (1, 8192)                  25        4.72        2.08        0.44        memory
+SoftmaxV2     (16, 4096)                 25        3.80        2.63        0.69        memory
+SoftmaxV2     (64, 4096)                 25        5.62        4.51        0.80        memory
+SoftmaxV2     (256, 4096)                25       11.96       12.05        1.01        memory
+SoftmaxV2     (1024, 4096)               25       30.43       42.20        1.39        memory
+SoftmaxV2     (2048, 4096)               25       56.67       82.39        1.45        memory
+SoftmaxV2     (4096, 4096)               25      109.04      162.78        1.49        memory
+Swish         (1, 4096)                  25        1.50        2.02        1.34        memory
+Swish         (1, 8192)                  25        1.66        2.03        1.23        memory
+Swish         (16, 4096)                 25        2.84        2.27        0.80        memory
+Swish         (64, 4096)                 25        3.34        3.09        0.93        memory
+Swish         (256, 4096)                25        5.64        6.37        1.13        memory
+Swish         (1024, 4096)               25       14.46       19.48        1.35        memory
+Swish         (2048, 4096)               25       26.09       36.95        1.42        memory
+Swish         (4096, 4096)               25       49.19       71.91        1.46        memory
+
+--- MATMUL (parsed full MKN) ---
+MATMUL        256x256x256              75         3.88        6.95        1.79        memory
+MATMUL        512x512x512              75         6.20        8.30        1.34        memory
+MATMUL        1024x1024x1024             75        14.78       16.74        1.13compute (PIPE_M)
+MATMUL        1024x4096x4096             75       155.62      166.45        1.07compute (PIPE_M)
+MATMUL        1024x4096x14336            75       620.84      563.03        0.91compute (PIPE_M)
+MATMUL        2048x4096x4096             75       282.06      321.15        1.14compute (PIPE_M)
+MATMUL        4096x4096x4096             75       579.21      630.55        1.09compute (PIPE_M)
+
+--- summary (geomean pred/meas ratio) ---
+  Add            n= 12  geomean ratio = 1.199  (min=0.53 max=2.52)
+  Gelu           n= 12  geomean ratio = 0.898  (min=0.74 max=1.23)
+  LayerNormV3    n=  8  geomean ratio = 0.833  (min=0.42 max=1.36)
+  MatMul         n=  7  geomean ratio = 1.184  (min=0.91 max=1.79)
+  Mul            n=  8  geomean ratio = 1.320  (min=0.73 max=2.55)
+  Relu           n= 12  geomean ratio = 1.487  (min=0.90 max=2.88)
+  SoftmaxV2      n=  8  geomean ratio = 0.868  (min=0.43 max=1.49)
+  Swish          n=  8  geomean ratio = 1.183  (min=0.80 max=1.46)
