@@ -5,6 +5,7 @@ from typing import Optional
 
 from ..core.operator import Dtype
 from ..core.cost_model import CostModel
+from ..core.communication import kv_transfer_time
 from ..core.evaluator import PerformanceEvaluator
 from ..core.parallel import ParallelConfig
 from ..frontend.config_extractor import ConfigExtractor
@@ -49,6 +50,12 @@ class ServingSimulator:
 
         Returns ServingMetrics with per-request and aggregate stats.
         """
+        if self.serving_config.disaggregated:
+            return self._run_disaggregated(requests)
+        return self._run_colocated(requests)
+
+    def _run_colocated(self, requests: list[Request]) -> ServingMetrics:
+        """Colocated serving: prefill and decode in the same iteration."""
         cfg = self.serving_config
         kv_alloc = KVCacheAllocator(cfg.num_kv_blocks, cfg.block_size)
         scheduler = BatchScheduler(cfg, kv_alloc)
@@ -132,6 +139,118 @@ class ServingSimulator:
                 decoding.remove(req)
 
         return ServingMetrics(requests=done, total_time_us=time_us)
+
+    def _run_disaggregated(self, requests: list[Request]) -> ServingMetrics:
+        """Disaggregated serving: separate prefill and decode pools with KV transfer."""
+        cfg = self.serving_config
+        kv_alloc = KVCacheAllocator(cfg.num_kv_blocks, cfg.block_size)
+        scheduler = BatchScheduler(cfg, kv_alloc)
+
+        waiting = list(requests)
+        transferring: list[tuple[Request, float]] = []  # (req, transfer_done_time)
+        decoding: list[Request] = []
+        done: list[Request] = []
+        time_us = 0.0
+
+        max_iters = len(requests) * (cfg.max_seq_len + 1)
+        for _ in range(max_iters):
+            if not waiting and not transferring and not decoding:
+                break
+
+            # Move completed transfers to decode pool
+            newly_decoding = []
+            still_transferring = []
+            for req, done_time in transferring:
+                if done_time <= time_us:
+                    req.state = RequestState.DECODING
+                    newly_decoding.append(req)
+                else:
+                    still_transferring.append((req, done_time))
+            transferring = still_transferring
+            decoding.extend(newly_decoding)
+
+            available = [r for r in waiting if r.arrival_time_us <= time_us]
+
+            # Schedule prefill batch (from waiting)
+            prefill_batch = scheduler.schedule(available, [])
+            # Schedule decode batch (from decoding)
+            decode_batch = scheduler.schedule([], decoding)
+
+            iter_latency = 0.0
+
+            # Prefill pool
+            if prefill_batch.prefill_requests:
+                prefill_lat = self._estimate_prefill(prefill_batch)
+                iter_latency = max(iter_latency, prefill_lat)
+
+                for req in prefill_batch.prefill_requests:
+                    req.state = RequestState.PREFILLING
+                    req.prefill_start_us = time_us
+                    req.prefill_end_us = time_us + prefill_lat
+                    req.first_token_us = time_us + prefill_lat
+                    req.kv_len = req.prompt_len
+                    req.generated_tokens = 1
+                    waiting.remove(req)
+
+                    # KV transfer delay
+                    transfer_us = self._estimate_kv_transfer(req.prompt_len)
+                    transfer_done = time_us + prefill_lat + transfer_us
+                    transferring.append((req, transfer_done))
+
+            # Decode pool (runs in parallel with prefill on different hardware)
+            if decode_batch.decode_requests:
+                decode_lat = self._estimate_decode(decode_batch)
+                iter_latency = max(iter_latency, decode_lat)
+
+                for req in decode_batch.decode_requests:
+                    req.generated_tokens += 1
+                    req.kv_len += 1
+                    req.decode_latencies_us.append(decode_lat)
+                    blocks_needed = req.blocks_needed(cfg.block_size)
+                    kv_alloc.allocate(req.id, blocks_needed)
+
+            if iter_latency == 0.0:
+                # No work — fast forward
+                next_times = []
+                if waiting:
+                    future = [r for r in waiting if r.arrival_time_us > time_us]
+                    if future:
+                        next_times.append(min(r.arrival_time_us for r in future))
+                if transferring:
+                    next_times.append(min(t for _, t in transferring))
+                if next_times:
+                    time_us = min(next_times)
+                    continue
+                break
+
+            time_us += iter_latency
+
+            # Check decode completion
+            finished = []
+            for req in decoding:
+                if req.generated_tokens >= req.output_len:
+                    req.state = RequestState.DONE
+                    req.finish_us = time_us
+                    kv_alloc.free(req.id)
+                    done.append(req)
+                    finished.append(req)
+            for req in finished:
+                decoding.remove(req)
+
+        return ServingMetrics(requests=done, total_time_us=time_us)
+
+    def _estimate_kv_transfer(self, seq_len: int) -> float:
+        """Estimate KV cache transfer time for disaggregated serving."""
+        cfg = self.serving_config
+        mc = self.model_config
+        num_layers = mc.get("num_hidden_layers", 32)
+        n_kv_heads = mc.get("num_key_value_heads",
+                            mc.get("num_attention_heads", 32))
+        num_heads = mc.get("num_attention_heads", 32)
+        head_dim = mc.get("hidden_size", 4096) // num_heads
+        dtype_bytes = self.dtype.bytes
+        return kv_transfer_time(num_layers, n_kv_heads, head_dim,
+                                seq_len, dtype_bytes, cfg.kv_transfer_bw_GBs)
 
     def _estimate_prefill(self, batch: ScheduledBatch) -> float:
         """Estimate prefill latency for batch."""

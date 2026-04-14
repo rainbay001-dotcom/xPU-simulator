@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from ...core.hardware import HardwareSpec, MemLevel
-from ...core.parallel import InterconnectSpec
+from ...core.parallel import (
+    InterconnectSpec, HierarchicalInterconnect,
+    NPU_910B_INTERCONNECT, NPU_910C_INTERCONNECT,
+)
 
 
 class AscendSpec(HardwareSpec):
@@ -41,7 +44,7 @@ class AscendSpec(HardwareSpec):
         pipeline_startup_us: float = 2.0,    # Pipeline fill latency
         pipeline_drain_us: float = 1.0,      # Pipeline drain latency
         efficiency_factors: dict[str, float] | None = None,
-        interconnect: InterconnectSpec | None = None,
+        interconnect: InterconnectSpec | HierarchicalInterconnect | None = None,
     ):
         self._name = name
         self.interconnect = interconnect
@@ -153,7 +156,7 @@ ASCEND_910B = AscendSpec(
         "static_plumbing_us": 3.0,  # ConcatD/Slice launch cost (msprof Qwen3 3.8 µs/call)
         "host_dispatch_us": 1.5,   # per-op host-side launch floor (torch_npu/ACL)
     },
-    interconnect=InterconnectSpec("HCCS", 392, 1.0),
+    interconnect=NPU_910B_INTERCONNECT,
 )
 
 # Ascend 910C
@@ -193,5 +196,5 @@ ASCEND_910C = AscendSpec(
         "static_plumbing_us": 3.5,  # ConcatD/Slice launch cost (msprof Qwen3 3.8 µs/call)
         "host_dispatch_us": 1.8,    # per-op host-side launch floor (torch_npu/ACL)
     },
-    interconnect=InterconnectSpec("HCCS", 600, 1.0),
+    interconnect=NPU_910C_INTERCONNECT,
 )

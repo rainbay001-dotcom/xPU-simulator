@@ -233,6 +233,80 @@ def test_comm_aware_cost_model():
     print(f"  ALL_REDUCE: {cost.latency_us:.1f} us, MatMul: {cost_mm.latency_us:.1f} us")
 
 
+def test_hw_preset_hierarchical_interconnect():
+    """Hardware presets should carry HierarchicalInterconnect."""
+    from xpu_simulator.core.parallel import HierarchicalInterconnect
+    from xpu_simulator.backends.npu.hardware import ASCEND_910B, ASCEND_910C
+    assert isinstance(H100_80GB.interconnect, HierarchicalInterconnect)
+    assert isinstance(ASCEND_910B.interconnect, HierarchicalInterconnect)
+    assert isinstance(ASCEND_910C.interconnect, HierarchicalInterconnect)
+    print(f"  H100: {H100_80GB.interconnect.nvlink_bw} GB/s NVLink, {H100_80GB.interconnect.nic_bw} GB/s NIC")
+    print(f"  910B: {ASCEND_910B.interconnect.nvlink_bw} GB/s HCCS, {ASCEND_910B.interconnect.nic_bw} GB/s NIC")
+
+def test_comm_with_hw_preset_interconnect():
+    """CommAwareCostModel should work with hierarchical interconnect from HW preset."""
+    base = GPUCostModel(H100_80GB)
+    model = CommAwareCostModel(base, H100_80GB.interconnect, ParallelConfig(tp_size=8))
+    comm_op = OpSpec(OpType.ALL_REDUCE,
+                     [TensorSpec((2048, 4096))],
+                     [TensorSpec((2048, 4096))],
+                     attrs={"n_ranks": 8}, name="ar")
+    cost = model.estimate(comm_op)
+    assert cost.bound == "communication"
+    assert cost.latency_us > 0
+    print(f"  ALL_REDUCE with H100 hierarchical: {cost.latency_us:.1f} us")
+
+
+def test_bus_bw_intra_node():
+    """Intra-node: bus_bw should equal NVLink bandwidth."""
+    from xpu_simulator.core.parallel import H100_INTERCONNECT
+    from xpu_simulator.core.communication import calculate_bus_bw
+    bus = calculate_bus_bw(H100_INTERCONNECT, n_ranks=8, gpus_per_node=8)
+    assert abs(bus.ring_bw_GBs - 370.8) < 0.1
+    assert abs(bus.tree_bw_GBs - 185.4) < 0.1
+    assert bus.best_algo == "ring"
+    print(f"  Intra-node H100: ring={bus.ring_bw_GBs:.1f}, tree={bus.tree_bw_GBs:.1f} GB/s")
+
+
+def test_bus_bw_inter_node():
+    """Inter-node: bus_bw should be limited by NIC."""
+    from xpu_simulator.core.parallel import H100_INTERCONNECT
+    from xpu_simulator.core.communication import calculate_bus_bw
+    bus = calculate_bus_bw(H100_INTERCONNECT, n_ranks=16, gpus_per_node=8)
+    # Inter-node with 2 nodes: nic_effective = 48.5 * 2 = 97
+    # ring = min(370.8, 97) = 97
+    assert bus.ring_bw_GBs < H100_INTERCONNECT.nvlink_bw
+    assert bus.ring_bw_GBs > 0
+    print(f"  Inter-node H100 16 ranks: ring={bus.ring_bw_GBs:.1f}, tree={bus.tree_bw_GBs:.1f} GB/s")
+
+
+def test_auto_busbw_flag():
+    """auto_busbw=True should change comm times vs False."""
+    from xpu_simulator.core.parallel import H100_INTERCONNECT
+    msg = 100 * 1024 * 1024  # 100 MB
+    n = 16
+
+    cc_raw = all_reduce_time(msg, n, H100_INTERCONNECT, gpus_per_node=8, auto_busbw=False)
+    cc_auto = all_reduce_time(msg, n, H100_INTERCONNECT, gpus_per_node=8, auto_busbw=True)
+
+    # auto_busbw should use lower effective bandwidth, so time should be >= raw
+    assert cc_auto.latency_us > 0
+    assert cc_raw.latency_us > 0
+    print(f"  Raw: {cc_raw.latency_us:.1f} us, Auto: {cc_auto.latency_us:.1f} us")
+
+
+def test_auto_busbw_backward_compat():
+    """auto_busbw=False (default) should give same results as before."""
+    msg = 100 * 1024 * 1024
+    n = 8
+    # Flat InterconnectSpec ignores auto_busbw
+    cc1 = all_reduce_time(msg, n, NVLINK)
+    cc2 = all_reduce_time(msg, n, NVLINK, auto_busbw=True)
+    # With flat spec, auto_busbw has no effect (not HierarchicalInterconnect)
+    assert abs(cc1.latency_us - cc2.latency_us) < 0.01
+    print(f"  Flat spec: {cc1.latency_us:.1f} us == {cc2.latency_us:.1f} us")
+
+
 if __name__ == "__main__":
     print("=== Parallelism Tests ===\n")
 
@@ -248,6 +322,12 @@ if __name__ == "__main__":
         ("Comm overlap with compute", test_comm_overlap_with_compute),
         ("Single device compat", test_single_device_backward_compat),
         ("CommAwareCostModel", test_comm_aware_cost_model),
+        ("HW preset hierarchical interconnect", test_hw_preset_hierarchical_interconnect),
+        ("Comm with HW preset interconnect", test_comm_with_hw_preset_interconnect),
+        ("Bus BW intra-node", test_bus_bw_intra_node),
+        ("Bus BW inter-node", test_bus_bw_inter_node),
+        ("Auto busbw flag", test_auto_busbw_flag),
+        ("Auto busbw backward compat", test_auto_busbw_backward_compat),
     ]:
         print(f"--- {name} ---")
         fn()

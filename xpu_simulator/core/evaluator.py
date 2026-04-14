@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 import networkx as nx
 
 from .graph import ComputeGraph, Node
 from .cost_model import CostModel, OpCost
+from .operator import OpSpec, OpType, TensorSpec, Dtype
+from .parallel import ParallelConfig
 
 
 @dataclass
@@ -225,3 +228,87 @@ class PerformanceEvaluator:
 
         op_map = {r.node.id: r for r in per_op}
         return [op_map[n.id] for n in path if n.id in op_map]
+
+
+# ------------------------------------------------------------------ #
+# Pipeline parallelism
+# ------------------------------------------------------------------ #
+
+@dataclass
+class PipelineResult:
+    """Result of a pipeline-parallel simulation across multiple stages."""
+    per_stage: list[SimResult]
+    bubble_fraction: float
+    total_latency_us: float          # With bubble overhead
+    ideal_latency_us: float          # Without bubble (max stage)
+    pp_send_recv_us: float = 0.0     # Inter-stage transfer overhead
+
+    @property
+    def bubble_overhead_us(self) -> float:
+        return self.total_latency_us - self.ideal_latency_us
+
+    def summary(self) -> str:
+        lines = [
+            f"Pipeline stages:  {len(self.per_stage)}",
+            f"Bubble fraction:  {self.bubble_fraction:.1%}",
+            f"Ideal latency:    {self.ideal_latency_us:.2f} us ({self.ideal_latency_us / 1000:.3f} ms)",
+            f"Total latency:    {self.total_latency_us:.2f} us ({self.total_latency_us / 1000:.3f} ms)",
+            f"Bubble overhead:  {self.bubble_overhead_us:.2f} us",
+            f"PP send/recv:     {self.pp_send_recv_us:.2f} us",
+        ]
+        for i, stage in enumerate(self.per_stage):
+            lines.append(f"  Stage {i}: {stage.total_latency_us:.2f} us "
+                          f"({stage.compute_bound_count} compute, "
+                          f"{stage.memory_bound_count} memory)")
+        return "\n".join(lines)
+
+
+def run_pipeline(stages: list[ComputeGraph],
+                 cost_model: CostModel,
+                 parallel: ParallelConfig,
+                 overlap: bool = False,
+                 pp_transfer_bytes: int = 0) -> PipelineResult:
+    """Simulate pipeline-parallel execution across stages.
+
+    Args:
+        stages: Per-stage computation graphs (one per PP rank).
+        cost_model: The cost model to use (should be CommAwareCostModel
+                    for PP_SEND_RECV support).
+        parallel: ParallelConfig with pp_size, vpp, gradient_accumulation.
+        overlap: Whether to model intra-stage op overlap.
+        pp_transfer_bytes: Activation bytes transferred between stages.
+                           If 0, estimated from the last op of each stage.
+    """
+    evaluator = PerformanceEvaluator(cost_model)
+
+    per_stage = []
+    for graph in stages:
+        result = evaluator.run(graph, overlap=overlap)
+        per_stage.append(result)
+
+    # Max stage determines the pipeline steady-state
+    ideal_latency = max(s.total_latency_us for s in per_stage) if per_stage else 0.0
+
+    # PP send/recv overhead (per micro-batch, amortized)
+    pp_send_recv = 0.0
+    if pp_transfer_bytes > 0 and hasattr(cost_model, '_estimate_pp'):
+        pp_op = OpSpec(
+            OpType.PP_SEND_RECV,
+            [TensorSpec((pp_transfer_bytes,), dtype=Dtype.INT8)],
+            [TensorSpec((pp_transfer_bytes,), dtype=Dtype.INT8)],
+            name="pp_transfer",
+        )
+        pp_cost = cost_model.estimate(pp_op)
+        pp_send_recv = pp_cost.latency_us
+
+    bubble = parallel.bubble_fraction
+    # Total = ideal * (1 + bubble) + pp_overhead * (pp_size - 1)
+    total = ideal_latency * (1.0 + bubble) + pp_send_recv * max(0, parallel.pp_size - 1)
+
+    return PipelineResult(
+        per_stage=per_stage,
+        bubble_fraction=bubble,
+        total_latency_us=total,
+        ideal_latency_us=ideal_latency,
+        pp_send_recv_us=pp_send_recv,
+    )

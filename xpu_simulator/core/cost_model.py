@@ -7,10 +7,11 @@ from typing import Optional, TYPE_CHECKING
 
 from .hardware import HardwareSpec
 from .operator import OpSpec, OpType
-from .parallel import InterconnectSpec, ParallelConfig
+from .parallel import InterconnectSpec, HierarchicalInterconnect, ParallelConfig
 
 if TYPE_CHECKING:
     from .profiling_db import ProfilingDB
+    from .communication import NCCLProfile
 
 
 @dataclass
@@ -134,21 +135,40 @@ _COMM_OPS = {OpType.ALL_REDUCE, OpType.ALL_GATHER,
 
 
 class CommAwareCostModel(CostModel):
-    """Wraps a compute cost model and handles communication ops via interconnect."""
+    """Wraps a compute cost model and handles communication ops via interconnect.
 
-    def __init__(self, base: CostModel, interconnect: InterconnectSpec,
-                 parallel: ParallelConfig):
+    Supports flat InterconnectSpec or HierarchicalInterconnect for automatic
+    intra/inter-node bandwidth selection, and optional NCCLProfile for
+    realistic latency floors.
+    """
+
+    def __init__(self, base: CostModel,
+                 interconnect: InterconnectSpec | HierarchicalInterconnect,
+                 parallel: ParallelConfig,
+                 nccl: Optional["NCCLProfile"] = None,
+                 auto_busbw: bool = False,
+                 decompose: bool = False,
+                 n_channels: int = 8):
         super().__init__(base.hw)
         self.base = base
         self.interconnect = interconnect
         self.parallel = parallel
+        self.nccl = nccl
+        self.auto_busbw = auto_busbw
+        self.decompose = decompose
+        self.n_channels = n_channels
 
     def estimate(self, op: OpSpec) -> OpCost:
         if op.op_type in _COMM_OPS:
             return self._estimate_comm(op)
+        if op.op_type == OpType.PP_SEND_RECV:
+            return self._estimate_pp(op)
         return self.base.estimate(op)
 
     def _estimate_comm(self, op: OpSpec) -> OpCost:
+        if self.decompose:
+            return self._estimate_comm_dag(op)
+
         from .communication import (
             all_reduce_time, all_gather_time,
             reduce_scatter_time, all_to_all_time,
@@ -156,19 +176,99 @@ class CommAwareCostModel(CostModel):
 
         msg_bytes = op.memory_bytes
         n_ranks = op.attrs.get("n_ranks", self.parallel.tp_size)
+        gpn = self.parallel.gpus_per_node
 
         if op.op_type == OpType.ALL_REDUCE:
-            cc = all_reduce_time(msg_bytes, n_ranks, self.interconnect)
+            cc = all_reduce_time(msg_bytes, n_ranks, self.interconnect,
+                                 nccl=self.nccl, gpus_per_node=gpn,
+                                 auto_busbw=self.auto_busbw)
         elif op.op_type == OpType.ALL_GATHER:
-            cc = all_gather_time(msg_bytes, n_ranks, self.interconnect)
+            cc = all_gather_time(msg_bytes, n_ranks, self.interconnect,
+                                 nccl=self.nccl, gpus_per_node=gpn,
+                                 auto_busbw=self.auto_busbw)
         elif op.op_type == OpType.REDUCE_SCATTER:
-            cc = reduce_scatter_time(msg_bytes, n_ranks, self.interconnect)
+            cc = reduce_scatter_time(msg_bytes, n_ranks, self.interconnect,
+                                     nccl=self.nccl, gpus_per_node=gpn,
+                                     auto_busbw=self.auto_busbw)
         elif op.op_type == OpType.ALL_TO_ALL:
-            cc = all_to_all_time(msg_bytes, n_ranks, self.interconnect)
+            cc = all_to_all_time(msg_bytes, n_ranks, self.interconnect,
+                                 nccl=self.nccl, gpus_per_node=gpn,
+                                 auto_busbw=self.auto_busbw)
         else:
             cc = None
 
         latency = cc.latency_us if cc else 0.0
+        return OpCost(
+            compute_us=0.0,
+            memory_us=latency,
+            latency_us=latency,
+            bound="communication",
+            flops=0,
+            bytes_accessed=msg_bytes,
+            utilization=0.0,
+        )
+
+    def _estimate_comm_dag(self, op: OpSpec) -> OpCost:
+        """Estimate comm cost using DAG decomposition instead of analytical formulas."""
+        from .collective_dag import (
+            ring_all_reduce_dag, ring_all_gather_dag,
+            ring_reduce_scatter_dag, tree_all_reduce_dag,
+        )
+        from .communication import _resolve_interconnect
+
+        msg_bytes = op.memory_bytes
+        n_ranks = op.attrs.get("n_ranks", self.parallel.tp_size)
+        gpn = self.parallel.gpus_per_node
+        ic = _resolve_interconnect(self.interconnect, n_ranks, gpn)
+
+        if op.op_type == OpType.ALL_REDUCE:
+            dag = ring_all_reduce_dag(n_ranks, msg_bytes, self.n_channels)
+        elif op.op_type == OpType.ALL_GATHER:
+            dag = ring_all_gather_dag(n_ranks, msg_bytes, self.n_channels)
+        elif op.op_type == OpType.REDUCE_SCATTER:
+            dag = ring_reduce_scatter_dag(n_ranks, msg_bytes, self.n_channels)
+        else:
+            # ALL_TO_ALL: use analytical (no DAG decomposition)
+            from .communication import all_to_all_time
+            gpn = self.parallel.gpus_per_node
+            cc = all_to_all_time(msg_bytes, n_ranks, self.interconnect,
+                                 nccl=self.nccl, gpus_per_node=gpn,
+                                 auto_busbw=self.auto_busbw)
+            latency = cc.latency_us
+            return OpCost(
+                compute_us=0.0,
+                memory_us=latency,
+                latency_us=latency,
+                bound="communication",
+                flops=0,
+                bytes_accessed=msg_bytes,
+                utilization=0.0,
+            )
+
+        latency = dag.compute_latency(ic.bandwidth_GBs, ic.latency_us)
+        if self.nccl is not None:
+            latency = self.nccl.apply(latency, msg_bytes)
+
+        return OpCost(
+            compute_us=0.0,
+            memory_us=latency,
+            latency_us=latency,
+            bound="communication",
+            flops=0,
+            bytes_accessed=msg_bytes,
+            utilization=0.0,
+        )
+
+    def _estimate_pp(self, op: OpSpec) -> OpCost:
+        """Estimate pipeline send/recv latency."""
+        from .communication import pp_send_recv_time, _resolve_interconnect
+
+        msg_bytes = op.memory_bytes
+        # PP send/recv typically crosses nodes (inter-stage)
+        n_ranks = self.parallel.pp_size
+        gpn = self.parallel.gpus_per_node
+        ic = _resolve_interconnect(self.interconnect, n_ranks, gpn)
+        latency = pp_send_recv_time(msg_bytes, ic, nccl=self.nccl)
         return OpCost(
             compute_us=0.0,
             memory_us=latency,

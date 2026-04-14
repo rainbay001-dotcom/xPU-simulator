@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from ...core.hardware import HardwareSpec, MemLevel
-from ...core.parallel import InterconnectSpec
+from ...core.parallel import (
+    InterconnectSpec, HierarchicalInterconnect,
+    H100_INTERCONNECT, A100_INTERCONNECT,
+)
 
 
 class GPUSpec(HardwareSpec):
@@ -22,7 +25,7 @@ class GPUSpec(HardwareSpec):
         hbm_bw_GBs: float,
         cuda_core_flops_map: dict[str, float] | None = None,
         efficiency_factors: dict[str, float] | None = None,
-        interconnect: InterconnectSpec | None = None,
+        interconnect: InterconnectSpec | HierarchicalInterconnect | None = None,
         cta_tile: tuple[int, int] = (128, 128),
     ):
         self._name = name
@@ -100,7 +103,7 @@ A100_80GB = GPUSpec(
         "static_tc_us": 5.0,     # per-op overhead for Tensor Core ops
         "static_cuda_us": 2.0,   # per-op overhead for CUDA Core ops
     },
-    interconnect=InterconnectSpec("NVLink", 600, 0.5),
+    interconnect=A100_INTERCONNECT,
 )
 
 H100_80GB = GPUSpec(
@@ -141,5 +144,5 @@ H100_80GB = GPUSpec(
         "static_tc_us": 5.0,
         "static_cuda_us": 2.0,
     },
-    interconnect=InterconnectSpec("NVLink", 900, 0.5),
+    interconnect=H100_INTERCONNECT,
 )

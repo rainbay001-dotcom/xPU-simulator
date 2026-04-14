@@ -21,3 +21,9 @@ class ServingConfig:
     max_tokens_budget: int = 4096
     block_size: int = 16
     num_kv_blocks: int = 1024
+
+    # Disaggregated serving (prefill/decode on separate pools)
+    disaggregated: bool = False
+    prefill_replicas: int = 1
+    decode_replicas: int = 1
+    kv_transfer_bw_GBs: float = 48.5  # Inter-instance bandwidth (400G IB)

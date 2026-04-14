@@ -32,6 +32,7 @@ class OpType(Enum):
     KV_CONCAT = auto()        # Append current token's K/V to cache (decode-step plumbing)
     KV_SLICE = auto()         # Read current view of K/V cache (decode-step plumbing)
     TRIU = auto()             # Build causal mask (prefill-only plumbing)
+    PP_SEND_RECV = auto()     # Pipeline parallelism point-to-point activation transfer
     UNKNOWN = auto()
 
 
@@ -121,6 +122,8 @@ class OpSpec:
             return self.inputs[0].numel if self.inputs else 0
         elif self.op_type in (OpType.ALL_GATHER, OpType.REDUCE_SCATTER):
             # Communication ops: no compute, bandwidth-dominated
+            return 0
+        elif self.op_type == OpType.PP_SEND_RECV:
             return 0
         elif self.op_type in (OpType.TRANSPOSE, OpType.RESHAPE, OpType.KV_CONCAT,
                                OpType.KV_SLICE, OpType.TRIU):

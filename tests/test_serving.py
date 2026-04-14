@@ -236,6 +236,60 @@ def test_throughput_optimizer():
     print(f"  Max throughput batch size: {best}")
 
 
+def test_kv_transfer_time_formula():
+    """KV transfer time should match analytical formula."""
+    from xpu_simulator.core.communication import kv_transfer_time
+    # 32 layers, 8 KV heads, 128 head_dim, 1024 seq, fp16 (2 bytes)
+    t = kv_transfer_time(32, 8, 128, 1024, 2.0, 48.5)
+    # kv_bytes = 2 * 32 * 8 * 128 * 1024 * 2 = 134,217,728 bytes = 128 MB
+    kv_bytes = 2 * 32 * 8 * 128 * 1024 * 2
+    expected = kv_bytes / (48.5e9) * 1e6
+    assert abs(t - expected) < 0.1, f"Expected {expected:.1f}, got {t:.1f}"
+    print(f"  KV transfer 1024 tokens: {t:.1f} us ({kv_bytes / 1e6:.1f} MB)")
+
+
+def test_disaggregated_mode():
+    """Disaggregated serving should work and add KV transfer overhead."""
+    from xpu_simulator.serving.config import ServingConfig
+    from xpu_simulator.serving.simulator import ServingSimulator
+    from xpu_simulator.serving.request import Request
+    from xpu_simulator.backends.gpu.hardware import H100_80GB
+    from xpu_simulator.backends.gpu.cost_model import GPUCostModel
+    from xpu_simulator.core.operator import Dtype
+
+    model_config = {
+        "model_type": "llama",
+        "hidden_size": 4096,
+        "num_hidden_layers": 4,  # Small for test speed
+        "num_attention_heads": 32,
+        "num_key_value_heads": 8,
+        "intermediate_size": 11008,
+        "vocab_size": 32000,
+        "hidden_act": "silu",
+    }
+
+    # Colocated
+    cfg_co = ServingConfig(max_batch_size=4, max_seq_len=256,
+                           num_kv_blocks=512, disaggregated=False)
+    sim_co = ServingSimulator(model_config, GPUCostModel(H100_80GB), cfg_co, Dtype.FP16)
+    reqs = [Request(id=i, prompt_len=64, output_len=8) for i in range(2)]
+    m_co = sim_co.run(reqs)
+
+    # Disaggregated
+    cfg_da = ServingConfig(max_batch_size=4, max_seq_len=256,
+                           num_kv_blocks=512, disaggregated=True,
+                           kv_transfer_bw_GBs=48.5)
+    reqs2 = [Request(id=i, prompt_len=64, output_len=8) for i in range(2)]
+    sim_da = ServingSimulator(model_config, GPUCostModel(H100_80GB), cfg_da, Dtype.FP16)
+    m_da = sim_da.run(reqs2)
+
+    print(f"  Colocated: {m_co.total_time_us:.1f} us, {len(m_co.requests)} done")
+    print(f"  Disaggregated: {m_da.total_time_us:.1f} us, {len(m_da.requests)} done")
+    # Both should complete all requests
+    assert len(m_co.requests) == 2
+    assert len(m_da.requests) == 2
+
+
 if __name__ == "__main__":
     print("=== Serving Tests ===\n")
 
@@ -251,6 +305,8 @@ if __name__ == "__main__":
         ("Simulator single request", test_simulator_single_request),
         ("Simulator multiple requests", test_simulator_multiple_requests),
         ("Throughput optimizer", test_throughput_optimizer),
+        ("KV transfer time formula", test_kv_transfer_time_formula),
+        ("Disaggregated mode", test_disaggregated_mode),
     ]:
         print(f"--- {name} ---")
         fn()
