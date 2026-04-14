@@ -167,6 +167,25 @@
   <a href="#vidur-integration" class="sub">SimAI Integration</a>
   <div class="sep"></div>
   <a href="#dataflow">End-to-End Data Flow</a>
+  <a href="#dataflow-training" class="sub">Training Path</a>
+  <a href="#dataflow-inference" class="sub">Inference Path</a>
+  <a href="#dataflow-input" class="sub">Input Specification</a>
+  <div class="sep"></div>
+  <a href="#models">Supported Models</a>
+  <a href="#models-inference" class="sub">Inference Models</a>
+  <a href="#models-training" class="sub">Training (Model-Agnostic)</a>
+  <div class="sep"></div>
+  <a href="#inference-deep">Inference Simulation Deep Dive</a>
+  <a href="#inference-predictor" class="sub">Execution Time Predictor</a>
+  <a href="#inference-features" class="sub">ML Features &amp; Prediction</a>
+  <a href="#inference-tp-comm" class="sub">TP Communication Backends</a>
+  <a href="#inference-time-agg" class="sub">Time Aggregation</a>
+  <div class="sep"></div>
+  <a href="#kernels">Kernel Simulation</a>
+  <a href="#kernels-profiling" class="sub">AIOB Profiling</a>
+  <a href="#kernels-extrap" class="sub">Extrapolation</a>
+  <a href="#kernels-boundary" class="sub">Simulation Boundary</a>
+  <div class="sep"></div>
   <a href="#config">Configuration Reference</a>
   <a href="#design">Key Design Decisions</a>
   <a href="#references">References &amp; Papers</a>
@@ -1184,71 +1203,579 @@ class generates AICB workload files (<code>SimAIWorkload</code>) and invokes the
 <!-- ================================================================ -->
 <h2 id="dataflow">End-to-End Data Flow</h2>
 
-<h3>Training Simulation Flow</h3>
+<h3 id="dataflow-input">Input Specification</h3>
 
-<ol class="flow-steps">
-  <li>
-    <strong>User specifies configuration</strong><br>
-    Model parameters (hidden_size, num_layers, etc.), parallelism strategy (TP, DP, PP, EP sizes),
-    cluster topology (GPU type, network bandwidth, switch layout).
-  </li>
-  <li>
-    <strong>AICB generates workload</strong><br>
-    Extracts communication patterns from model + parallelism config. Profiles compute kernels via AIOB.
-    Outputs <code>workload.txt</code> with layer-by-layer compute times, collective types, and data sizes.
-  </li>
-  <li>
-    <strong>Astra-sim loads workload</strong><br>
-    Creates one <code>Sys</code> instance per GPU rank. <code>Workload</code> class parses the workload file,
-    creates <code>Layer</code> objects. Begins event-driven iteration: Forward &rarr; Input Gradient &rarr; Weight Gradient.
-  </li>
-  <li>
-    <strong>SimCCL decomposes collectives</strong><br>
-    When a collective operation is encountered, <code>MockNcclGroup::genFlowModels()</code> selects the
-    optimal algorithm/protocol and decomposes it into P2P <code>SingleFlow</code> objects with explicit
-    dependency DAGs. Multi-channel pipelining splits data across parallel channels.
-  </li>
-  <li>
-    <strong>Network backend processes P2P flows</strong><br>
-    <em>Analytical mode:</em> looks up bus bandwidth &rarr; instant time estimate.<br>
-    <em>Simulation mode:</em> injects packets into ns-3 &rarr; models congestion, ECMP, PFC, DCQCN.<br>
-    <em>Physical mode:</em> sends real RDMA traffic via InfiniBand verbs.
-  </li>
-  <li>
-    <strong>Results collected</strong><br>
-    Per-layer timing breakdown, total iteration time, compute vs. communication vs. exposed communication,
-    bubble fraction, CSV output for analysis.
-  </li>
+<p>SimAI requires <strong>three inputs</strong> from the user:</p>
+
+<table>
+  <tr><th>Input</th><th>Example</th><th>Format</th></tr>
+  <tr>
+    <td><strong>Model Parameters</strong></td>
+    <td>hidden_size=7168, num_layers=61, num_experts=256, num_attention_heads=128</td>
+    <td>Passed to AICB or Vidur model config</td>
+  </tr>
+  <tr>
+    <td><strong>Parallelism Config</strong></td>
+    <td>TP=2, DP=4, PP=12, EP=16, VPP=8, GA=24, total_gpus=9216</td>
+    <td>Passed to AICB / astra-sim workload header</td>
+  </tr>
+  <tr>
+    <td><strong>Cluster Topology</strong></td>
+    <td>GPU type (H100), NVLink BW, NIC BW, switch layout, CC algorithm</td>
+    <td>Topology file + busbw.yaml + SimAI.conf</td>
+  </tr>
+</table>
+
+<h3 id="dataflow-training">Training Simulation Flow</h3>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 680" width="920" height="680">
+  <text x="460" y="24" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="600" letter-spacing="1">TRAINING SIMULATION: END-TO-END DATA FLOW</text>
+
+  <!-- Step 1: User Config -->
+  <rect x="300" y="40" width="320" height="56" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <text x="460" y="64" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="600">User Input</text>
+  <text x="460" y="82" text-anchor="middle" fill="#e6edf3" font-size="10">Model Params + Parallelism Config + Cluster Topology</text>
+
+  <path d="M460,96 L460,116" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- Step 2: AICB -->
+  <rect x="260" y="118" width="400" height="70" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="280" y="142" fill="#58a6ff" font-size="9" font-weight="700">STEP 1</text>
+  <text x="340" y="142" fill="#58a6ff" font-size="12" font-weight="600">AICB Generates Workload</text>
+  <text x="460" y="162" text-anchor="middle" fill="#e6edf3" font-size="10">Walk through Megatron/DeepSpeed iteration &rarr; record per-layer compute times + collective ops</text>
+  <text x="460" y="178" text-anchor="middle" fill="#8b949e" font-size="9">Compute times from AIOB profiling or &alpha;&times;T<tspan font-size="7" dy="-3">A100</tspan><tspan dy="3"> extrapolation</tspan></text>
+
+  <path d="M460,188 L460,210" stroke="#58a6ff" stroke-width="1.5" fill="none"/>
+  <rect x="380" y="210" width="160" height="26" rx="4" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.8"/>
+  <text x="460" y="228" text-anchor="middle" fill="#58a6ff" font-size="10">workload.txt</text>
+  <path d="M460,236 L460,256" stroke="#3fb950" stroke-width="2" marker-end="url(#arrow-g)" fill="none"/>
+
+  <!-- Step 3: astra-sim -->
+  <rect x="180" y="258" width="560" height="80" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="200" y="282" fill="#3fb950" font-size="9" font-weight="700">STEP 2</text>
+  <text x="260" y="282" fill="#3fb950" font-size="12" font-weight="600">Astra-sim Runs Event Loop</text>
+  <text x="460" y="302" text-anchor="middle" fill="#e6edf3" font-size="10">One Sys per GPU rank &middot; Workload iterates layers: Forward &rarr; Input Gradient &rarr; Weight Gradient</text>
+  <text x="460" y="320" text-anchor="middle" fill="#8b949e" font-size="9">Compute events scheduled as ticks &middot; WG comm overlaps next layer IG compute &middot; Bubble = (PP-1)/(GA&times;VPP)</text>
+
+  <path d="M460,338 L460,368" stroke="#d2a8ff" stroke-width="2" marker-end="url(#arrow-p)" fill="none"/>
+  <text x="475" y="358" fill="#d2a8ff" font-size="9">collective op request</text>
+
+  <!-- Step 4: SimCCL -->
+  <rect x="180" y="370" width="560" height="80" rx="10" fill="#161b22" stroke="#d2a8ff" stroke-width="1.5"/>
+  <text x="200" y="394" fill="#d2a8ff" font-size="9" font-weight="700">STEP 3</text>
+  <text x="260" y="394" fill="#d2a8ff" font-size="12" font-weight="600">SimCCL Decomposes Collective</text>
+  <text x="460" y="414" text-anchor="middle" fill="#e6edf3" font-size="10">MockNcclGroup selects algorithm (Ring/Tree/NVLS) + protocol (LL/LL128/Simple)</text>
+  <text x="460" y="434" text-anchor="middle" fill="#8b949e" font-size="9">Generates SingleFlow DAG with dependencies &middot; Multi-channel pipelining splits data across channels</text>
+
+  <path d="M460,450 L460,480" stroke="#f0883e" stroke-width="2" marker-end="url(#arrow-o)" fill="none"/>
+  <text x="475" y="470" fill="#f0883e" font-size="9">P2P flows + deps</text>
+
+  <!-- Step 5: Network -->
+  <rect x="180" y="482" width="560" height="88" rx="10" fill="#161b22" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="200" y="506" fill="#f0883e" font-size="9" font-weight="700">STEP 4</text>
+  <text x="260" y="506" fill="#f0883e" font-size="12" font-weight="600">Network Backend Simulates Flows</text>
+
+  <rect x="200" y="518" width="160" height="38" rx="5" fill="#3d2a0d" stroke="#f0883e" stroke-width="0.6"/>
+  <text x="280" y="534" text-anchor="middle" fill="#f0883e" font-size="9" font-weight="600">Analytical</text>
+  <text x="280" y="548" text-anchor="middle" fill="#8b949e" font-size="8">busbw lookup &middot; O(1)</text>
+
+  <rect x="380" y="518" width="180" height="38" rx="5" fill="#3d2a0d" stroke="#f0883e" stroke-width="0.6"/>
+  <text x="470" y="534" text-anchor="middle" fill="#f0883e" font-size="9" font-weight="600">ns-3 Simulation</text>
+  <text x="470" y="548" text-anchor="middle" fill="#8b949e" font-size="8">RDMA &middot; DCQCN &middot; PFC &middot; ECMP</text>
+
+  <rect x="580" y="518" width="140" height="38" rx="5" fill="#3d2a0d" stroke="#f0883e" stroke-width="0.6"/>
+  <text x="650" y="534" text-anchor="middle" fill="#f0883e" font-size="9" font-weight="600">Physical RDMA</text>
+  <text x="650" y="548" text-anchor="middle" fill="#8b949e" font-size="8">IB verbs on real HW</text>
+
+  <path d="M460,570 L460,600" stroke="#3fb950" stroke-width="2" marker-end="url(#arrow-g)" fill="none"/>
+
+  <!-- Step 6: Output -->
+  <rect x="240" y="602" width="440" height="56" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="260" y="626" fill="#3fb950" font-size="9" font-weight="700">OUTPUT</text>
+  <text x="460" y="626" text-anchor="middle" fill="#e6edf3" font-size="11">Per-Layer Timing &middot; Total Iteration Time</text>
+  <text x="460" y="646" text-anchor="middle" fill="#8b949e" font-size="10">Compute % vs Communication % vs Bubble % &middot; CSV for analysis</text>
+</svg>
+<p class="diagram-caption">Figure 12 &mdash; Training simulation end-to-end: user config &rarr; AICB workload &rarr; astra-sim event loop &rarr; SimCCL decomposition &rarr; network backend &rarr; results.</p>
+</div>
+
+<h3 id="dataflow-inference">Inference Simulation Flow</h3>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 560" width="920" height="560">
+  <text x="460" y="24" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="600" letter-spacing="1">INFERENCE SIMULATION: END-TO-END DATA FLOW</text>
+
+  <!-- Step 1: Request Generation -->
+  <rect x="300" y="44" width="320" height="56" rx="10" fill="#161b22" stroke="#ff7b72" stroke-width="1.5"/>
+  <text x="320" y="68" fill="#ff7b72" font-size="9" font-weight="700">STEP 1</text>
+  <text x="380" y="68" fill="#ff7b72" font-size="12" font-weight="600">Request Generation</text>
+  <text x="460" y="88" text-anchor="middle" fill="#8b949e" font-size="10">Poisson / trace-driven arrivals &middot; prompt_tokens + max_gen_tokens per request</text>
+
+  <path d="M460,100 L460,124" stroke="#ff7b72" stroke-width="2" marker-end="url(#arrow-r)" fill="none"/>
+
+  <!-- Step 2: Global Scheduler -->
+  <rect x="300" y="126" width="320" height="50" rx="10" fill="#161b22" stroke="#ff7b72" stroke-width="1.5"/>
+  <text x="320" y="150" fill="#ff7b72" font-size="9" font-weight="700">STEP 2</text>
+  <text x="380" y="150" fill="#ff7b72" font-size="12" font-weight="600">Global Scheduler</text>
+  <text x="460" y="168" text-anchor="middle" fill="#8b949e" font-size="10">FCFS / Splitwise &rarr; dispatch request to least-loaded replica</text>
+
+  <path d="M460,176 L460,200" stroke="#ff7b72" stroke-width="2" marker-end="url(#arrow-r)" fill="none"/>
+
+  <!-- Step 3: Replica Scheduler -->
+  <rect x="260" y="202" width="400" height="56" rx="10" fill="#161b22" stroke="#ff7b72" stroke-width="1.5"/>
+  <text x="280" y="226" fill="#ff7b72" font-size="9" font-weight="700">STEP 3</text>
+  <text x="340" y="226" fill="#ff7b72" font-size="12" font-weight="600">Replica Scheduler Forms Batch</text>
+  <text x="460" y="246" text-anchor="middle" fill="#8b949e" font-size="10">Groups requests &middot; Batch(requests, num_tokens) &middot; continuous batching</text>
+
+  <path d="M460,258 L460,282" stroke="#f0883e" stroke-width="2" marker-end="url(#arrow-o)" fill="none"/>
+
+  <!-- Step 4: Execution Time Prediction -->
+  <rect x="140" y="284" width="640" height="120" rx="10" fill="#161b22" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="160" y="308" fill="#f0883e" font-size="9" font-weight="700">STEP 4</text>
+  <text x="220" y="308" fill="#f0883e" font-size="12" font-weight="600">Execution Time Prediction</text>
+
+  <!-- Sub-components -->
+  <rect x="160" y="320" width="180" height="68" rx="6" fill="#3d2a0d" stroke="#f0883e" stroke-width="0.6"/>
+  <text x="250" y="340" text-anchor="middle" fill="#f0883e" font-size="10" font-weight="600">Compute Time</text>
+  <text x="250" y="356" text-anchor="middle" fill="#8b949e" font-size="8">sklearn RF models trained</text>
+  <text x="250" y="368" text-anchor="middle" fill="#8b949e" font-size="8">on GPU profiling CSVs</text>
+  <text x="250" y="380" text-anchor="middle" fill="#e6edf3" font-size="8">feature: num_tokens</text>
+
+  <rect x="360" y="320" width="200" height="68" rx="6" fill="#3d2a0d" stroke="#f0883e" stroke-width="0.6"/>
+  <text x="460" y="340" text-anchor="middle" fill="#f0883e" font-size="10" font-weight="600">TP Communication</text>
+  <text x="460" y="356" text-anchor="middle" fill="#8b949e" font-size="8">SimAI subprocess (analytical/ns-3)</text>
+  <text x="460" y="368" text-anchor="middle" fill="#8b949e" font-size="8">or profiling lookup table</text>
+  <text x="460" y="380" text-anchor="middle" fill="#e6edf3" font-size="8">AllReduce(h &times; tokens &times; 2)</text>
+
+  <rect x="580" y="320" width="180" height="68" rx="6" fill="#3d2a0d" stroke="#f0883e" stroke-width="0.6"/>
+  <text x="670" y="340" text-anchor="middle" fill="#f0883e" font-size="10" font-weight="600">Attention Time</text>
+  <text x="670" y="356" text-anchor="middle" fill="#8b949e" font-size="8">Prefill: f(kv_cache, chunk&sup2;)</text>
+  <text x="670" y="368" text-anchor="middle" fill="#8b949e" font-size="8">Decode: f(batch_size, kv_len)</text>
+  <text x="670" y="380" text-anchor="middle" fill="#e6edf3" font-size="8">separate ML models</text>
+
+  <path d="M460,404 L460,428" stroke="#3fb950" stroke-width="2" marker-end="url(#arrow-g)" fill="none"/>
+
+  <!-- Step 5: Time Aggregation -->
+  <rect x="200" y="430" width="520" height="50" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="220" y="454" fill="#3fb950" font-size="9" font-weight="700">STEP 5</text>
+  <text x="280" y="454" fill="#3fb950" font-size="12" font-weight="600">Time Aggregation</text>
+  <text x="460" y="472" text-anchor="middle" fill="#8b949e" font-size="10">total = (attn + mlp + 2&times;AllReduce + norm + add) &times; layers_per_stage + PP_comm + CPU overhead</text>
+
+  <path d="M460,480 L460,504" stroke="#3fb950" stroke-width="2" marker-end="url(#arrow-g)" fill="none"/>
+
+  <!-- Output -->
+  <rect x="260" y="506" width="400" height="44" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="280" y="530" fill="#3fb950" font-size="9" font-weight="700">OUTPUT</text>
+  <text x="460" y="530" text-anchor="middle" fill="#e6edf3" font-size="11">TTFT &middot; TBT &middot; E2E Latency &middot; Throughput &middot; Chrome Trace</text>
+</svg>
+<p class="diagram-caption">Figure 13 &mdash; Inference simulation end-to-end: request arrival &rarr; scheduling &rarr; batching &rarr; execution time prediction (compute + comm + attention) &rarr; metrics.</p>
+</div>
+
+
+<!-- ================================================================ -->
+<!-- SUPPORTED MODELS                                                  -->
+<!-- ================================================================ -->
+<h2 id="models">Supported Models</h2>
+
+<h3 id="models-inference">Inference Models (Vidur)</h3>
+
+<p>
+  Vidur&rsquo;s <code>model_config.py</code> defines concrete <code>ModelConfig</code> classes for each supported
+  model. Each class hardcodes architecture dimensions (hidden_size, num_heads, num_layers, etc.) and a <code>get_name()</code>
+  identifier used on the CLI via <code>--replica_config_model_name</code>:
+</p>
+
+<table>
+  <tr><th>Model</th><th>Params</th><th>Architecture</th><th>Key Dimensions</th></tr>
+  <tr><td><strong>DeepSeek-V3</strong></td><td>671B</td><td>MoE</td><td>61 layers, 256 experts, 128 Q-heads, MLA attention</td></tr>
+  <tr><td><strong>Qwen3-MoE</strong></td><td>235B</td><td>MoE</td><td>AICB backend only (config in progress)</td></tr>
+  <tr><td><strong>Qwen3-Next</strong></td><td>80B</td><td>Dense/MoE</td><td>AICB backend only</td></tr>
+  <tr><td><strong>LLaMA-3 70B</strong></td><td>70B</td><td>Dense</td><td>80 layers, 8192 dim, GQA (64Q/8KV)</td></tr>
+  <tr><td><strong>LLaMA-3 8B</strong></td><td>8B</td><td>Dense</td><td>32 layers, 4096 dim, GQA (32Q/8KV)</td></tr>
+  <tr><td><strong>LLaMA-2 70B</strong></td><td>70B</td><td>Dense</td><td>80 layers, 8192 dim, GQA (64Q/8KV)</td></tr>
+  <tr><td><strong>LLaMA-2 7B</strong></td><td>7B</td><td>Dense</td><td>32 layers, 4096 dim, MHA</td></tr>
+  <tr><td><strong>CodeLlama 34B</strong></td><td>34B</td><td>Dense</td><td>48 layers, 8192 dim, GQA (64Q/8KV)</td></tr>
+  <tr><td><strong>Qwen 72B</strong></td><td>72B</td><td>Dense</td><td>80 layers, 8192 dim, QKV bias</td></tr>
+  <tr><td><strong>InternLM2 20B</strong></td><td>20B</td><td>Dense</td><td>48 layers, 6144 dim, GQA (48Q/8KV)</td></tr>
+  <tr><td><strong>InternLM 20B</strong></td><td>20B</td><td>Dense</td><td>60 layers, 5120 dim, MHA</td></tr>
+  <tr><td><strong>Phi-2</strong></td><td>2.7B</td><td>Dense</td><td>32 layers, 2560 dim, LayerNorm+GELU</td></tr>
+</table>
+
+<div class="callout">
+  <strong>Adding a new model</strong>
+  Create a <code>ModelConfig</code> subclass with the architecture dimensions, register it via <code>get_name()</code>,
+  and provide a profiling CSV with kernel timings measured on the target GPU. No code changes to the simulator itself.
+</div>
+
+<h3 id="models-training">Training Simulation (Model-Agnostic)</h3>
+
+<p>
+  The training side (<strong>AICB + astra-sim</strong>) is <strong>not tied to specific model names</strong>.
+  It takes raw parameters:
+</p>
+
+<pre><code>hidden_size, num_layers, num_attention_heads, intermediate_size,
+num_experts, num_experts_per_tok, sequence_length, micro_batch_size</code></pre>
+
+<p>
+  Any transformer architecture works &mdash; you supply the dimensions and parallelism config, AICB generates
+  the workload. The workload file format encodes layer-by-layer compute times and collective operations,
+  not model names. AICB profiles or extrapolates compute times for whichever GPU type you target.
+</p>
+
+
+<!-- ================================================================ -->
+<!-- INFERENCE SIMULATION DEEP DIVE                                    -->
+<!-- ================================================================ -->
+<h2 id="inference-deep">Inference Simulation Deep Dive</h2>
+
+<p>
+  This section traces exactly how a model config turns into per-request latency predictions.
+  Understanding this path is essential for interpreting Vidur&rsquo;s output and extending it to new models.
+</p>
+
+<h3 id="inference-predictor">Execution Time Predictor</h3>
+
+<p>
+  The <code>SklearnExecutionTimePredictor</code> is initialized once at startup. Its <code>__init__</code>:
+</p>
+
+<ol>
+  <li>Loads 5 profiling CSV files (compute, attention, CPU overhead, AllReduce, SendRecv)</li>
+  <li>Filters each CSV by <strong>exact match</strong> on model architecture dimensions</li>
+  <li>Trains lightweight sklearn models (RandomForest with GridSearchCV, MAPE scorer)</li>
+  <li>Pre-computes all possible predictions into Python dicts for O(1) lookup at runtime</li>
 </ol>
 
-<h3>Inference Simulation Flow</h3>
+<div class="callout warn">
+  <strong>Critical design point:</strong> Architecture parameters (embedding_dim, num_heads, etc.) are used
+  as <strong>filters</strong> to select the right profiling dataset, NOT as ML features. A different model
+  architecture requires a separate profiling run and separate CSV files. The actual ML features are
+  deliberately minimal: <code>num_tokens</code>, <code>batch_size</code>, <code>kv_cache_size</code>.
+</div>
 
-<ol class="flow-steps">
-  <li>
-    <strong>Vidur generates requests</strong><br>
-    <code>RequestGenerator</code> creates inference requests with Poisson or trace-driven arrival patterns.
-    Each request has a prompt length and expected generation length.
-  </li>
-  <li>
-    <strong>Global scheduler dispatches</strong><br>
-    <code>GlobalScheduler</code> (FCFS, Splitwise, etc.) assigns requests to replicas based on load.
-  </li>
-  <li>
-    <strong>Replica forms batches</strong><br>
-    <code>ReplicaScheduler</code> groups requests into batches. For disaggregated mode, prefill and decode
-    batches go to separate pools.
-  </li>
-  <li>
-    <strong>Execution time prediction</strong><br>
-    <code>ExecutionTimePredictor</code> calls SimAI (analytical or simulation) to estimate prefill time,
-    decode time, and TP communication overhead for each batch.
-  </li>
-  <li>
-    <strong>Metrics recorded</strong><br>
-    TTFT (Time to First Token), TBT (Time Between Tokens), end-to-end latency, throughput,
-    scheduling delay. Output as JSON trace, Chrome trace, CSV.
-  </li>
+<h4>Profiling CSV Filtering</h4>
+
+<p>Each profiling CSV is filtered by exact equality on model config fields:</p>
+
+<pre><code>df[
+    (df["n_head"]   == model_config.num_q_heads)     &amp;
+    (df["n_kv_head"] == model_config.num_kv_heads)   &amp;
+    (df["n_embd"]    == model_config.embedding_dim)   &amp;
+    (df["n_expanded_embd"] == model_config.mlp_hidden_dim) &amp;
+    (df["use_gated_mlp"]   == model_config.use_gated_mlp)  &amp;
+    (df["vocab_size"]      == model_config.vocab_size)      &amp;
+    (df["num_tensor_parallel_workers"] == tensor_parallel_size)
+]</code></pre>
+
+<h3 id="inference-features">ML Features &amp; Prediction Targets</h3>
+
+<p>
+  Three groups of sklearn models are trained, each predicting a kernel&rsquo;s execution time in milliseconds:
+</p>
+
+<table>
+  <tr><th>Prediction Target</th><th>What It Models</th><th>ML Feature(s)</th></tr>
+  <tr><td><code>attn_pre_proj</code></td><td>QKV projection GEMM</td><td><code>num_tokens_rounded</code></td></tr>
+  <tr><td><code>attn_post_proj</code></td><td>Output projection GEMM</td><td><code>num_tokens_rounded</code></td></tr>
+  <tr><td><code>attn_prefill</code></td><td>Flash-attention (new tokens)</td><td><code>kv_cache_size</code>, <code>prefill_chunk_size&sup2;</code></td></tr>
+  <tr><td><code>attn_decode</code></td><td>Attention (decode tokens)</td><td><code>batch_size</code>, <code>avg_kv_cache_size</code></td></tr>
+  <tr><td><code>attn_kv_cache_save</code></td><td>Write K/V to cache</td><td><code>num_tokens</code></td></tr>
+  <tr><td><code>mlp_up_proj</code></td><td>MLP gate+up GEMM</td><td><code>num_tokens_rounded</code></td></tr>
+  <tr><td><code>mlp_down_proj</code></td><td>MLP down GEMM</td><td><code>num_tokens_rounded</code></td></tr>
+  <tr><td><code>mlp_act</code></td><td>SiLU/GELU activation</td><td><code>num_tokens_rounded</code></td></tr>
+  <tr><td><code>input_layernorm</code></td><td>Attention pre-norm</td><td><code>num_tokens_rounded</code></td></tr>
+  <tr><td><code>post_attention_layernorm</code></td><td>MLP pre-norm</td><td><code>num_tokens_rounded</code></td></tr>
+  <tr><td><code>add</code></td><td>Residual add</td><td><code>num_tokens_rounded</code></td></tr>
+  <tr><td><code>all_reduce</code></td><td>TP AllReduce collective</td><td><code>num_tokens_rounded</code></td></tr>
+  <tr><td><code>send_recv</code></td><td>PP activation transfer</td><td><code>num_tokens_rounded</code></td></tr>
+  <tr><td><code>schedule</code>, <code>sampler_e2e</code>, etc.</td><td>CPU overheads</td><td><code>batch_size</code></td></tr>
+</table>
+
+<div class="callout key">
+  <strong>num_tokens_rounded</strong> is <code>(total_tokens + 7) // 8 * 8</code> &mdash; the total tokens
+  across all requests in the micro-batch (both prefill and decode tokens combined), aligned to 8 for
+  CUDA kernel efficiency. This single feature drives most linear-layer predictions.
+</div>
+
+<h4>Attention: Prefill vs Decode</h4>
+
+<p>Attention gets separate models because the compute profiles are fundamentally different:</p>
+
+<ul>
+  <li><strong>Prefill:</strong> O(n&sup2;) flash-attention. Features: <code>(kv_cache_size, prefill_chunk_size&sup2;)</code>
+      &mdash; the quadratic term captures the self-attention complexity</li>
+  <li><strong>Decode:</strong> O(n) per-token attention. Features: <code>(batch_size, avg_kv_cache_size)</code>
+      &mdash; linear in both dimensions</li>
+</ul>
+
+<p>KV cache size is quantized to nearest multiple of 64 (matching paged KV block size) for lookup efficiency.</p>
+
+<h3 id="inference-tp-comm">TP Communication: Four Backends</h3>
+
+<p>
+  TP AllReduce time is the one component where SimAI&rsquo;s network simulation can be used instead of
+  profiling lookup. There are four backends:
+</p>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 280" width="880" height="280">
+  <text x="440" y="24" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="600" letter-spacing="1">TP ALLREDUCE COMMUNICATION BACKENDS</text>
+
+  <!-- vidur -->
+  <rect x="20" y="50" width="200" height="200" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.2"/>
+  <text x="120" y="76" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">vidur</text>
+  <line x1="35" y1="84" x2="205" y2="84" stroke="#30363d"/>
+  <text x="120" y="104" text-anchor="middle" fill="#e6edf3" font-size="10">Profiling lookup table</text>
+  <text x="120" y="124" text-anchor="middle" fill="#8b949e" font-size="9">sklearn RF on nccl-test data</text>
+  <text x="120" y="144" text-anchor="middle" fill="#8b949e" font-size="9">feature: num_tokens_rounded</text>
+  <text x="120" y="170" text-anchor="middle" fill="#e6edf3" font-size="9">time = RF(tokens)</text>
+  <text x="120" y="186" text-anchor="middle" fill="#e6edf3" font-size="9">+ nccl_launch_overhead</text>
+  <text x="120" y="202" text-anchor="middle" fill="#e6edf3" font-size="9">+ skew &times; TP<tspan font-size="7" dy="-3">1.25</tspan></text>
+  <rect x="55" y="218" width="130" height="20" rx="4" fill="rgba(63,185,80,.12)"/>
+  <text x="120" y="232" text-anchor="middle" fill="#3fb950" font-size="9">Fastest &middot; Needs profiling</text>
+
+  <!-- simai_analytical -->
+  <rect x="235" y="50" width="200" height="200" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="1.2"/>
+  <text x="335" y="76" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">simai_analytical</text>
+  <line x1="250" y1="84" x2="420" y2="84" stroke="#30363d"/>
+  <text x="335" y="104" text-anchor="middle" fill="#e6edf3" font-size="10">SimAI binary (subprocess)</text>
+  <text x="335" y="124" text-anchor="middle" fill="#8b949e" font-size="9">busbw.yaml lookup</text>
+  <text x="335" y="148" text-anchor="middle" fill="#e6edf3" font-size="9">1. Write SimAIWorkload file</text>
+  <text x="335" y="164" text-anchor="middle" fill="#e6edf3" font-size="9">2. Spawn SimAI_analytical</text>
+  <text x="335" y="180" text-anchor="middle" fill="#e6edf3" font-size="9">3. Parse CSV output</text>
+  <text x="335" y="196" text-anchor="middle" fill="#e6edf3" font-size="9">4. Cache by content hash</text>
+  <rect x="270" y="218" width="130" height="20" rx="4" fill="rgba(63,185,80,.12)"/>
+  <text x="335" y="232" text-anchor="middle" fill="#3fb950" font-size="9">Fast &middot; No profiling needed</text>
+
+  <!-- simai_simulation -->
+  <rect x="450" y="50" width="200" height="200" rx="10" fill="#161b22" stroke="#f0883e" stroke-width="1.2"/>
+  <text x="550" y="76" text-anchor="middle" fill="#f0883e" font-size="12" font-weight="700">simai_simulation</text>
+  <line x1="465" y1="84" x2="635" y2="84" stroke="#30363d"/>
+  <text x="550" y="104" text-anchor="middle" fill="#e6edf3" font-size="10">SimAI binary + ns-3</text>
+  <text x="550" y="124" text-anchor="middle" fill="#8b949e" font-size="9">packet-level simulation</text>
+  <text x="550" y="148" text-anchor="middle" fill="#e6edf3" font-size="9">Same subprocess flow</text>
+  <text x="550" y="164" text-anchor="middle" fill="#e6edf3" font-size="9">but invokes SimAI_simulator</text>
+  <text x="550" y="180" text-anchor="middle" fill="#e6edf3" font-size="9">with topology + config</text>
+  <text x="550" y="196" text-anchor="middle" fill="#e6edf3" font-size="9">Cached by (h, tokens, dtype)</text>
+  <rect x="485" y="218" width="130" height="20" rx="4" fill="rgba(255,123,114,.12)"/>
+  <text x="550" y="232" text-anchor="middle" fill="#ff7b72" font-size="9">Slow &middot; Highest accuracy</text>
+
+  <!-- aicb -->
+  <rect x="665" y="50" width="200" height="200" rx="10" fill="#161b22" stroke="#d2a8ff" stroke-width="1.2"/>
+  <text x="765" y="76" text-anchor="middle" fill="#d2a8ff" font-size="12" font-weight="700">aicb</text>
+  <line x1="680" y1="84" x2="850" y2="84" stroke="#30363d"/>
+  <text x="765" y="104" text-anchor="middle" fill="#e6edf3" font-size="10">AICB CSV data</text>
+  <text x="765" y="124" text-anchor="middle" fill="#8b949e" font-size="9">MoE models only</text>
+  <text x="765" y="148" text-anchor="middle" fill="#e6edf3" font-size="9">TP comm = 0 at predictor</text>
+  <text x="765" y="164" text-anchor="middle" fill="#e6edf3" font-size="9">Comm embedded in per-layer</text>
+  <text x="765" y="180" text-anchor="middle" fill="#e6edf3" font-size="9">AICB CSV output directly</text>
+  <text x="765" y="196" text-anchor="middle" fill="#e6edf3" font-size="9">moe_comm = size/bandwidth</text>
+  <rect x="700" y="218" width="130" height="20" rx="4" fill="rgba(210,168,255,.12)"/>
+  <text x="765" y="232" text-anchor="middle" fill="#d2a8ff" font-size="9">MoE-specific path</text>
+</svg>
+<p class="diagram-caption">Figure 14 &mdash; Four backends for TP AllReduce communication time prediction, trading off speed, accuracy, and profiling requirements.</p>
+</div>
+
+<h4>SimAI Subprocess Protocol</h4>
+
+<p>When using the <code>simai_analytical</code> or <code>simai_simulation</code> backend:</p>
+
+<ol>
+  <li>Compute AllReduce tensor size: <code>bytes = hidden_size &times; num_tokens &times; dtype_bytes</code></li>
+  <li>Write a <code>SimAIWorkload</code> file with one layer: <code>forward_comm=ALLREDUCE, forward_comm_size=bytes</code></li>
+  <li>Compute an MD5 hash of the workload content for caching</li>
+  <li>Spawn the SimAI binary as a subprocess with topology/config args</li>
+  <li>Parse the output CSV (last row, column for end-to-end time in &mu;s)</li>
+  <li>Convert &mu;s &rarr; ms, add NCCL CPU launch overhead</li>
+  <li>Cache result by <code>(hidden_size, num_tokens, dtype_bytes)</code></li>
 </ol>
+
+<pre><code># SimAIWorkload file format (one AllReduce for inference TP):
+HYBRID_TRANSFORMER_FWD_IN_BCKWD model_parallel_NPU_group: 8 ep: 1 pp: 1 vpp: 1 ga: 1 all_gpus: 8 ...
+1
+layer0 -1 1 ALLREDUCE 131072 0 NONE 0 0 NONE 0 100</code></pre>
+
+<h3 id="inference-time-agg">Time Aggregation: From Components to Total</h3>
+
+<p>
+  The <code>ExecutionTime</code> class assembles per-kernel predictions into total batch execution time.
+  The key insight: <strong>AllReduce is counted twice per transformer block</strong> &mdash; once after
+  attention and once after MLP, matching the two AllReduce collectives in standard tensor parallelism.
+</p>
+
+<pre><code>attention_block_time =
+    attn_pre_proj + attn_post_proj + attn_prefill + attn_decode
+    + attn_kv_cache_save + attn_rope(=0) + input_layernorm
+    + tensor_parallel_allreduce                                    &larr; 1st AllReduce
+
+mlp_block_time =
+    mlp_up_proj + mlp_down_proj + mlp_act
+    + post_attention_layernorm
+    + tensor_parallel_allreduce                                    &larr; 2nd AllReduce
+
+transformer_block_time = attention_block_time + mlp_block_time + residual_add
+
+model_time = (transformer_block_time &times; layers_per_PP_stage
+              + pipeline_parallel_send_recv) &times; 1e-3              &larr; ms &rarr; seconds
+
+total_time = model_time + cpu_overhead &times; 1e-3</code></pre>
+
+<div class="callout key">
+  <strong>Per-layer MoE path (AICB backend):</strong> For MoE models (DeepSeek-671B, Qwen3-MoE), the predictor
+  iterates layer-by-layer and reads pre-computed AICB CSV data instead of using the sklearn models. MoE communication
+  time is computed as <code>comm_size / bandwidth</code> where bandwidth is either <code>rdma_bandwidth</code>
+  (inter-node EP) or <code>nvlink_bandwidth</code> (intra-node EP), hardcoded in the replica config.
+</div>
+
+
+<!-- ================================================================ -->
+<!-- KERNEL SIMULATION                                                 -->
+<!-- ================================================================ -->
+<h2 id="kernels">Kernel Simulation: What SimAI Does and Does Not Model</h2>
+
+<p>
+  A common misconception: SimAI does <strong>not simulate GPU kernels</strong>. It never models what
+  happens inside a CUDA/HIP kernel &mdash; no register allocation, no warp scheduling, no memory
+  coalescing. Every kernel is treated as a <strong>black-box timing number</strong>.
+</p>
+
+<h3 id="kernels-profiling">Method 1: AIOB Profiling (Primary)</h3>
+
+<p>
+  Run the actual kernel on the target GPU, measure wallclock time, record to CSV:
+</p>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 140" width="800" height="140">
+  <rect x="20" y="30" width="160" height="80" rx="8" fill="#161b22" stroke="#3fb950" stroke-width="1.2"/>
+  <text x="100" y="58" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">Real GPU</text>
+  <text x="100" y="78" text-anchor="middle" fill="#8b949e" font-size="9">A100 / H100 / H800</text>
+  <text x="100" y="94" text-anchor="middle" fill="#8b949e" font-size="9">Run AIOB benchmark</text>
+
+  <path d="M180,70 L240,70" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none"/>
+  <text x="210" y="62" text-anchor="middle" fill="#3fb950" font-size="8">profile</text>
+
+  <rect x="240" y="30" width="180" height="80" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="1.2"/>
+  <text x="330" y="55" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600">Profiling CSV</text>
+  <text x="330" y="75" text-anchor="middle" fill="#8b949e" font-size="9">(num_tokens, kernel) &rarr; time_ms</text>
+  <text x="330" y="91" text-anchor="middle" fill="#8b949e" font-size="9">filtered by model arch dims</text>
+
+  <path d="M420,70 L480,70" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none"/>
+  <text x="450" y="62" text-anchor="middle" fill="#58a6ff" font-size="8">train</text>
+
+  <rect x="480" y="30" width="140" height="80" rx="8" fill="#161b22" stroke="#d2a8ff" stroke-width="1.2"/>
+  <text x="550" y="55" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="600">sklearn RF</text>
+  <text x="550" y="75" text-anchor="middle" fill="#8b949e" font-size="9">tokens &rarr; time_ms</text>
+  <text x="550" y="91" text-anchor="middle" fill="#8b949e" font-size="9">curve fit, not simulation</text>
+
+  <path d="M620,70 L680,70" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#arrow-p)" fill="none"/>
+  <text x="650" y="62" text-anchor="middle" fill="#d2a8ff" font-size="8">lookup</text>
+
+  <rect x="680" y="30" width="100" height="80" rx="8" fill="#161b22" stroke="#f0883e" stroke-width="1.2"/>
+  <text x="730" y="58" text-anchor="middle" fill="#f0883e" font-size="11" font-weight="600">Prediction</text>
+  <text x="730" y="78" text-anchor="middle" fill="#8b949e" font-size="9">Pre-computed</text>
+  <text x="730" y="94" text-anchor="middle" fill="#8b949e" font-size="9">dict[tokens] &rarr; ms</text>
+</svg>
+<p class="diagram-caption">Figure 15 &mdash; Kernel timing pipeline: real GPU profiling &rarr; CSV &rarr; sklearn curve fit &rarr; O(1) dict lookup at simulation time.</p>
+</div>
+
+<h3 id="kernels-extrap">Method 2: Parameter Extrapolation (For Unavailable GPUs)</h3>
+
+<p>
+  When the target GPU is not available for profiling, SimAI extrapolates from a reference GPU (typically A100):
+</p>
+
+<pre><code>Time<sub>TargetGPU</sub> = &alpha; &times; Time<sub>A100</sub>
+
+&alpha; = f(kernel_type, FLOPS<sub>target</sub>/FLOPS<sub>A100</sub>, MemBW<sub>target</sub>/MemBW<sub>A100</sub>)</code></pre>
+
+<p>
+  The scaling factor &alpha; depends on whether the kernel is compute-bound (scale by FLOPS ratio)
+  or memory-bound (scale by bandwidth ratio). This is essentially a roofline-model extrapolation.
+</p>
+
+<h4>Method 3: GPU Microarch Simulator (Rare)</h4>
+
+<p>
+  For truly unknown hardware (pre-silicon evaluation), the paper mentions using GPGPU-Sim for
+  microarchitectural simulation. This is outside SimAI itself and used only as a last-resort
+  source for kernel timing numbers.
+</p>
+
+<h3 id="kernels-boundary">The Simulation Boundary</h3>
+
+<p>
+  This table clarifies exactly what SimAI simulates versus what it treats as empirical input:
+</p>
+
+<table>
+  <tr><th>Aspect</th><th>Simulated?</th><th>Method</th></tr>
+  <tr>
+    <td>Kernel compute time (matmul, attention, norm, etc.)</td>
+    <td><span class="chip chip-red">No</span></td>
+    <td>Profiled on real GPU or extrapolated</td>
+  </tr>
+  <tr>
+    <td>NCCL algorithm selection (Ring/Tree/NVLS)</td>
+    <td><span class="chip chip-green">Yes</span></td>
+    <td>MockNccl reimplements NCCL&rsquo;s selection heuristics</td>
+  </tr>
+  <tr>
+    <td>Collective &rarr; P2P decomposition</td>
+    <td><span class="chip chip-green">Yes</span></td>
+    <td>SimCCL generates SingleFlow DAGs with channel pipelining</td>
+  </tr>
+  <tr>
+    <td>Network packet transport</td>
+    <td><span class="chip chip-green">Yes</span></td>
+    <td>ns-3 models RDMA, congestion, PFC, ECMP packet-by-packet</td>
+  </tr>
+  <tr>
+    <td>Compute-communication overlap</td>
+    <td><span class="chip chip-green">Yes</span></td>
+    <td>Astra-sim event engine schedules WG comm overlapping next IG</td>
+  </tr>
+  <tr>
+    <td>Pipeline bubble</td>
+    <td><span class="chip chip-green">Yes</span></td>
+    <td>(PP-1)/(GA&times;VPP) formula from Layer.cc</td>
+  </tr>
+  <tr>
+    <td>Memory bus (NPU &harr; HBM)</td>
+    <td><span class="chip chip-green">Yes</span></td>
+    <td>LogGP model in MemBus.cc</td>
+  </tr>
+  <tr>
+    <td>Request scheduling &amp; batching</td>
+    <td><span class="chip chip-green">Yes</span></td>
+    <td>Vidur event-driven scheduler (ORCA, vLLM, Sarathi, etc.)</td>
+  </tr>
+  <tr>
+    <td>KV cache management</td>
+    <td><span class="chip chip-green">Yes</span></td>
+    <td>Paged KV cache with block-level tracking</td>
+  </tr>
+  <tr>
+    <td>Warp scheduling / register allocation</td>
+    <td><span class="chip chip-red">No</span></td>
+    <td>Not modeled &mdash; abstracted by profiling</td>
+  </tr>
+  <tr>
+    <td>CUDA driver / runtime overhead</td>
+    <td><span class="chip chip-red">No</span></td>
+    <td>Absorbed into profiling measurements</td>
+  </tr>
+</table>
+
+<div class="callout key">
+  <strong>Why this works:</strong> Kernel execution time is <strong>deterministic</strong> for a given
+  (op, shape, dtype, GPU) &mdash; it does not change with network topology or parallelism strategy.
+  Profiling once on real hardware gives ground truth. The interesting simulation happens in
+  <strong>communication and scheduling</strong>, where collective algorithms, network congestion, and
+  compute-comm overlap interact in non-obvious ways. That&rsquo;s where SimAI&rsquo;s 98.1% accuracy
+  comes from: precise network simulation on top of empirical kernel timing.
+</div>
 
 
 <!-- ================================================================ -->
