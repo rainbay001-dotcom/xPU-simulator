@@ -1,0 +1,1410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SimAI Architecture &mdash; Full-Stack Distributed AI Training &amp; Inference Simulator</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #d2a8ff;
+    --accent4: #f0883e;
+    --accent5: #ff7b72;
+    --accent6: #79c0ff;
+    --code-bg: #0d1117;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  /* --- NAV --- */
+  nav {
+    position: fixed; top: 0; left: 0; width: 280px; height: 100vh;
+    background: var(--surface); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 24px 16px; z-index: 100;
+  }
+  nav h2 { font-size: 14px; color: var(--accent); margin-bottom: 16px; letter-spacing: .5px; text-transform: uppercase; }
+  nav a {
+    display: block; padding: 6px 12px; margin: 2px 0; border-radius: 6px;
+    color: var(--text-dim); text-decoration: none; font-size: 13px; transition: all .15s;
+  }
+  nav a:hover, nav a.active { background: var(--surface2); color: var(--text); }
+  nav a.sub { padding-left: 28px; font-size: 12px; }
+  nav .sep { height: 1px; background: var(--border); margin: 12px 0; }
+  /* --- MAIN --- */
+  main {
+    margin-left: 280px; max-width: 1100px; padding: 48px 56px 120px;
+  }
+  h1 {
+    font-size: 36px; font-weight: 800; margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--accent), var(--accent3));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .subtitle { color: var(--text-dim); font-size: 16px; margin-bottom: 40px; }
+  h2 {
+    font-size: 26px; font-weight: 700; margin: 56px 0 20px;
+    padding-bottom: 10px; border-bottom: 1px solid var(--border);
+    color: var(--text);
+  }
+  h3 { font-size: 19px; font-weight: 600; margin: 36px 0 14px; color: var(--accent6); }
+  h4 { font-size: 15px; font-weight: 600; margin: 24px 0 10px; color: var(--accent3); }
+  p { margin-bottom: 14px; }
+  ul, ol { margin: 0 0 16px 24px; }
+  li { margin-bottom: 6px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  strong { color: #fff; }
+  code {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: var(--code-bg); border: 1px solid var(--border);
+    padding: 2px 6px; border-radius: 4px; font-size: 13px; color: var(--accent5);
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px 20px; overflow-x: auto; margin: 16px 0; font-size: 13px; line-height: 1.5;
+  }
+  pre code { background: none; border: none; padding: 0; color: var(--text-dim); }
+  /* --- SVG containers --- */
+  .diagram {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 24px; margin: 24px 0; overflow-x: auto;
+  }
+  .diagram svg { display: block; margin: 0 auto; }
+  .diagram-caption {
+    text-align: center; font-size: 13px; color: var(--text-dim);
+    margin-top: 12px; font-style: italic;
+  }
+  /* --- Tables --- */
+  table {
+    width: 100%; border-collapse: collapse; margin: 16px 0;
+    font-size: 13.5px;
+  }
+  th, td { padding: 10px 14px; text-align: left; border: 1px solid var(--border); }
+  th { background: var(--surface2); color: var(--accent); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
+  td { background: var(--surface); }
+  tr:hover td { background: var(--surface2); }
+  /* --- Callout boxes --- */
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--surface);
+    padding: 16px 20px; border-radius: 0 8px 8px 0; margin: 20px 0;
+  }
+  .callout.warn { border-left-color: var(--accent4); }
+  .callout.key { border-left-color: var(--accent2); }
+  .callout strong { display: block; margin-bottom: 4px; }
+  /* --- Chip tags --- */
+  .chip {
+    display: inline-block; padding: 2px 10px; border-radius: 12px;
+    font-size: 11px; font-weight: 600; margin: 2px 4px 2px 0;
+  }
+  .chip-blue { background: rgba(88,166,255,.15); color: var(--accent); }
+  .chip-green { background: rgba(63,185,80,.15); color: var(--accent2); }
+  .chip-purple { background: rgba(210,168,255,.15); color: var(--accent3); }
+  .chip-orange { background: rgba(240,136,62,.15); color: var(--accent4); }
+  .chip-red { background: rgba(255,123,114,.15); color: var(--accent5); }
+  /* --- Flow steps --- */
+  .flow-steps { counter-reset: step; list-style: none; margin-left: 0; }
+  .flow-steps li {
+    counter-increment: step; position: relative; padding-left: 48px; margin-bottom: 20px;
+  }
+  .flow-steps li::before {
+    content: counter(step); position: absolute; left: 0; top: 0;
+    width: 32px; height: 32px; border-radius: 50%;
+    background: var(--accent); color: var(--bg); font-weight: 700;
+    display: flex; align-items: center; justify-content: center; font-size: 14px;
+  }
+  @media (max-width: 900px) {
+    nav { display: none; }
+    main { margin-left: 0; padding: 24px 20px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ================================================================ -->
+<!-- NAVIGATION                                                       -->
+<!-- ================================================================ -->
+<nav>
+  <h2>SimAI Architecture</h2>
+  <a href="#overview">Overview</a>
+  <a href="#arch-diagram">Overall Architecture</a>
+  <a href="#modes">Three Operation Modes</a>
+  <div class="sep"></div>
+  <a href="#aicb">1. AICB &mdash; Workload Generation</a>
+  <a href="#aicb-patterns" class="sub">Communication Patterns</a>
+  <a href="#aicb-aiob" class="sub">AIOB Sub-module</a>
+  <div class="sep"></div>
+  <a href="#astrasim">2. Astra-sim &mdash; Framework Layer</a>
+  <a href="#astrasim-layers" class="sub">Three-Layer Architecture</a>
+  <a href="#astrasim-event" class="sub">Event-Driven Engine</a>
+  <a href="#astrasim-training" class="sub">Training Loop FSM</a>
+  <a href="#astrasim-simai-ext" class="sub">SimAI Extensions</a>
+  <div class="sep"></div>
+  <a href="#simccl">3. SimCCL &mdash; Collective Comm</a>
+  <a href="#simccl-algorithms" class="sub">Algorithms &amp; Protocols</a>
+  <a href="#simccl-decomposition" class="sub">P2P Decomposition</a>
+  <a href="#simccl-busbw" class="sub">Bus Bandwidth Calc</a>
+  <div class="sep"></div>
+  <a href="#ns3">4. ns-3 &mdash; Network Simulation</a>
+  <a href="#ns3-scaleup" class="sub">Scale-Up Network</a>
+  <a href="#ns3-scaleout" class="sub">Scale-Out Network</a>
+  <a href="#ns3-topo" class="sub">Topology Generation</a>
+  <div class="sep"></div>
+  <a href="#vidur">5. Vidur &mdash; Inference Simulation</a>
+  <a href="#vidur-events" class="sub">Event-Driven Loop</a>
+  <a href="#vidur-pd" class="sub">PD Disaggregation</a>
+  <a href="#vidur-integration" class="sub">SimAI Integration</a>
+  <div class="sep"></div>
+  <a href="#dataflow">End-to-End Data Flow</a>
+  <a href="#config">Configuration Reference</a>
+  <a href="#design">Key Design Decisions</a>
+  <a href="#references">References &amp; Papers</a>
+</nav>
+
+<!-- ================================================================ -->
+<!-- MAIN CONTENT                                                     -->
+<!-- ================================================================ -->
+<main>
+
+<h1>SimAI Architecture</h1>
+<p class="subtitle">
+  Full-Stack Distributed AI Training &amp; Inference Simulator<br>
+  <span style="font-size:13px">Alibaba Cloud &middot; NSDI&rsquo;25 &middot; <code>aliyun/SimAI</code></span>
+</p>
+
+<!-- ============================================================== -->
+<h2 id="overview">Overview</h2>
+
+<p>
+  <strong>SimAI</strong> is a full-stack, high-precision simulator for large-scale LLM training and inference.
+  It models the entire distributed AI stack: from training framework orchestration and computation kernels,
+  through collective communication library behavior, down to packet-level network transport.
+</p>
+
+<p>
+  The motivation is pragmatic: GPU clusters cost millions to procure, and most capacity runs production workloads.
+  Before deploying a new network topology, parallelism strategy, or hardware generation, teams need to evaluate
+  performance via simulation. SimAI achieves <strong>98.1% average alignment</strong> with real-world training
+  results across diverse scenarios.
+</p>
+
+<div class="callout key">
+  <strong>Five Components</strong>
+  SimAI is composed of five independently-developed subsystems wired together:
+  <span class="chip chip-blue">AICB</span> workload generation &rarr;
+  <span class="chip chip-green">astra-sim</span> framework simulation &rarr;
+  <span class="chip chip-purple">SimCCL</span> collective decomposition &rarr;
+  <span class="chip chip-orange">ns-3</span> network simulation &rarr;
+  <span class="chip chip-red">Vidur</span> inference scheduling.
+</div>
+
+<!-- ============================================================== -->
+<h2 id="arch-diagram">Overall Architecture</h2>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" width="960" height="620">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#58a6ff"/>
+    </marker>
+    <marker id="arrow-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/>
+    </marker>
+    <marker id="arrow-p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d2a8ff"/>
+    </marker>
+    <marker id="arrow-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#f0883e"/>
+    </marker>
+    <marker id="arrow-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ff7b72"/>
+    </marker>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <!-- gradients for boxes -->
+    <linearGradient id="gAICB" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a3a5c"/><stop offset="100%" stop-color="#0d1f33"/>
+    </linearGradient>
+    <linearGradient id="gAstra" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a3d2a"/><stop offset="100%" stop-color="#0d1f15"/>
+    </linearGradient>
+    <linearGradient id="gSimCCL" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2a1a4a"/><stop offset="100%" stop-color="#150d28"/>
+    </linearGradient>
+    <linearGradient id="gNS3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3d2a0d"/><stop offset="100%" stop-color="#1f1500"/>
+    </linearGradient>
+    <linearGradient id="gVidur" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3d1a1a"/><stop offset="100%" stop-color="#1f0d0d"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Title -->
+  <text x="480" y="30" text-anchor="middle" fill="#8b949e" font-size="14" font-weight="600" letter-spacing="2">SIMAI FULL-STACK ARCHITECTURE</text>
+
+  <!-- ===== User Layer ===== -->
+  <rect x="30" y="50" width="900" height="50" rx="8" fill="none" stroke="#30363d" stroke-dasharray="6,4"/>
+  <text x="480" y="80" text-anchor="middle" fill="#8b949e" font-size="12">USER: Model Params + Parallelism Config + Cluster Topology</text>
+
+  <!-- ===== AICB ===== -->
+  <rect x="60" y="120" width="280" height="100" rx="10" fill="url(#gAICB)" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="200" y="148" text-anchor="middle" fill="#58a6ff" font-size="15" font-weight="700">AICB</text>
+  <text x="200" y="168" text-anchor="middle" fill="#8b949e" font-size="11">AI Communication Benchmark</text>
+  <text x="200" y="188" text-anchor="middle" fill="#e6edf3" font-size="10">Workload Generation + AIOB Compute Profiling</text>
+  <text x="200" y="205" text-anchor="middle" fill="#58a6ff" font-size="10">Python &middot; C++</text>
+
+  <!-- ===== Vidur ===== -->
+  <rect x="620" y="120" width="280" height="100" rx="10" fill="url(#gVidur)" stroke="#ff7b72" stroke-width="1.5"/>
+  <text x="760" y="148" text-anchor="middle" fill="#ff7b72" font-size="15" font-weight="700">Vidur</text>
+  <text x="760" y="168" text-anchor="middle" fill="#8b949e" font-size="11">LLM Inference Simulator</text>
+  <text x="760" y="188" text-anchor="middle" fill="#e6edf3" font-size="10">Multi-Request Scheduling &middot; PD Disaggregation</text>
+  <text x="760" y="205" text-anchor="middle" fill="#ff7b72" font-size="10">Python &middot; Event-Driven</text>
+
+  <!-- AICB -> Astra-sim arrow -->
+  <path d="M200,220 L200,270" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+  <text x="210" y="252" fill="#58a6ff" font-size="9">workload.txt</text>
+
+  <!-- Vidur -> Astra-sim arrow (subprocess call) -->
+  <path d="M700,220 L700,240 Q700,250 690,250 L550,250 Q540,250 540,260 L540,270" stroke="#ff7b72" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-r)" fill="none"/>
+  <text x="615" y="245" fill="#ff7b72" font-size="9">subprocess</text>
+
+  <!-- ===== Astra-sim (wide, center) ===== -->
+  <rect x="60" y="274" width="840" height="120" rx="10" fill="url(#gAstra)" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="480" y="302" text-anchor="middle" fill="#3fb950" font-size="15" font-weight="700">astra-sim-alibabacloud</text>
+  <text x="480" y="320" text-anchor="middle" fill="#8b949e" font-size="11">Distributed Training Framework Simulator (extended from Georgia Tech Astra-sim 1.0)</text>
+
+  <!-- Sub-boxes inside astra-sim -->
+  <rect x="80" y="334" width="160" height="46" rx="6" fill="none" stroke="#3fb950" stroke-width="0.8" stroke-dasharray="3,2"/>
+  <text x="160" y="354" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="600">Workload Layer</text>
+  <text x="160" y="370" text-anchor="middle" fill="#8b949e" font-size="9">Layer &middot; Workload</text>
+
+  <rect x="260" y="334" width="160" height="46" rx="6" fill="none" stroke="#3fb950" stroke-width="0.8" stroke-dasharray="3,2"/>
+  <text x="340" y="354" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="600">System Layer</text>
+  <text x="340" y="370" text-anchor="middle" fill="#8b949e" font-size="9">Sys &middot; Streams &middot; Events</text>
+
+  <rect x="440" y="334" width="160" height="46" rx="6" fill="none" stroke="#3fb950" stroke-width="0.8" stroke-dasharray="3,2"/>
+  <text x="520" y="354" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="600">Network Layer</text>
+  <text x="520" y="370" text-anchor="middle" fill="#8b949e" font-size="9">AstraNetworkAPI</text>
+
+  <rect x="620" y="334" width="260" height="46" rx="6" fill="none" stroke="#3fb950" stroke-width="0.8" stroke-dasharray="3,2"/>
+  <text x="750" y="354" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="600">MockNccl / Fast-Backend</text>
+  <text x="750" y="370" text-anchor="middle" fill="#8b949e" font-size="9">NCCL Group Mgmt &middot; Latency Tables</text>
+
+  <!-- Astra-sim C++ tag -->
+  <text x="890" y="298" text-anchor="end" fill="#3fb950" font-size="10">C++ &middot; Event-Driven</text>
+
+  <!-- ===== Astra-sim -> SimCCL ===== -->
+  <path d="M300,394 L300,440" stroke="#d2a8ff" stroke-width="2" marker-end="url(#arrow-p)" fill="none"/>
+  <text x="310" y="424" fill="#d2a8ff" font-size="9">collective ops</text>
+
+  <!-- ===== Astra-sim -> ns-3 ===== -->
+  <path d="M660,394 L660,440" stroke="#f0883e" stroke-width="2" marker-end="url(#arrow-o)" fill="none"/>
+  <text x="670" y="424" fill="#f0883e" font-size="9">P2P flows</text>
+
+  <!-- ===== SimCCL ===== -->
+  <rect x="60" y="444" width="420" height="100" rx="10" fill="url(#gSimCCL)" stroke="#d2a8ff" stroke-width="1.5"/>
+  <text x="270" y="472" text-anchor="middle" fill="#d2a8ff" font-size="15" font-weight="700">SimCCL</text>
+  <text x="270" y="490" text-anchor="middle" fill="#8b949e" font-size="11">Collective Communication Library Simulator</text>
+  <text x="270" y="510" text-anchor="middle" fill="#e6edf3" font-size="10">Ring &middot; Tree &middot; NVLS &middot; DBT &middot; CollNet | LL &middot; LL128 &middot; Simple</text>
+  <text x="270" y="530" text-anchor="middle" fill="#d2a8ff" font-size="10">C++ &middot; MockNcclGroup</text>
+
+  <!-- ===== ns-3 ===== -->
+  <rect x="500" y="444" width="400" height="100" rx="10" fill="url(#gNS3)" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="700" y="472" text-anchor="middle" fill="#f0883e" font-size="15" font-weight="700">ns-3-alibabacloud</text>
+  <text x="700" y="490" text-anchor="middle" fill="#8b949e" font-size="11">Packet-Level Network Simulator</text>
+  <text x="700" y="510" text-anchor="middle" fill="#e6edf3" font-size="10">NVLink &middot; RDMA/RoCEv2 &middot; DCQCN &middot; PFC &middot; ECMP</text>
+  <text x="700" y="530" text-anchor="middle" fill="#f0883e" font-size="10">C++ &middot; ns-3 Framework</text>
+
+  <!-- SimCCL -> ns-3 arrow -->
+  <path d="M480,494 L500,494" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#arrow-p)" fill="none"/>
+
+  <!-- ===== Output ===== -->
+  <rect x="200" y="570" width="560" height="40" rx="8" fill="none" stroke="#30363d" stroke-dasharray="6,4"/>
+  <text x="480" y="595" text-anchor="middle" fill="#8b949e" font-size="12">OUTPUT: Per-Layer Timing &middot; E2E Latency &middot; Compute vs Comm Breakdown &middot; TTFT / TBT</text>
+
+  <!-- Arrows to output -->
+  <path d="M270,544 L270,560 Q270,570 290,570" stroke="#d2a8ff" stroke-width="1" fill="none"/>
+  <path d="M700,544 L700,560 Q700,570 680,570" stroke="#f0883e" stroke-width="1" fill="none"/>
+</svg>
+<p class="diagram-caption">Figure 1 &mdash; SimAI full-stack architecture. AICB generates workloads consumed by astra-sim. SimCCL decomposes collectives into P2P flows. ns-3 provides packet-level network fidelity. Vidur drives inference scheduling via subprocess calls to astra-sim.</p>
+</div>
+
+<!-- ============================================================== -->
+<h2 id="modes">Three Operation Modes</h2>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 260" width="900" height="260">
+  <!-- Analytical -->
+  <rect x="20" y="30" width="260" height="200" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="150" y="58" text-anchor="middle" fill="#58a6ff" font-size="14" font-weight="700">SimAI-Analytical</text>
+  <line x1="40" y1="68" x2="260" y2="68" stroke="#30363d"/>
+  <text x="150" y="92" text-anchor="middle" fill="#e6edf3" font-size="11">Bus bandwidth (busbw.yaml)</text>
+  <text x="150" y="112" text-anchor="middle" fill="#e6edf3" font-size="11">estimates collective time</text>
+  <text x="150" y="140" text-anchor="middle" fill="#8b949e" font-size="10">No network topology needed</text>
+  <text x="150" y="160" text-anchor="middle" fill="#8b949e" font-size="10">O(1) per collective lookup</text>
+  <rect x="60" y="180" width="80" height="24" rx="4" fill="rgba(63,185,80,.15)"/>
+  <text x="100" y="196" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">Fast</text>
+  <rect x="160" y="180" width="100" height="24" rx="4" fill="rgba(255,123,114,.15)"/>
+  <text x="210" y="196" text-anchor="middle" fill="#ff7b72" font-size="11" font-weight="600">Lower Fidelity</text>
+
+  <!-- Simulation -->
+  <rect x="320" y="30" width="260" height="200" rx="10" fill="#161b22" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="450" y="58" text-anchor="middle" fill="#f0883e" font-size="14" font-weight="700">SimAI-Simulation</text>
+  <line x1="340" y1="68" x2="560" y2="68" stroke="#30363d"/>
+  <text x="450" y="92" text-anchor="middle" fill="#e6edf3" font-size="11">Full ns-3 packet-level sim</text>
+  <text x="450" y="112" text-anchor="middle" fill="#e6edf3" font-size="11">RDMA, congestion, routing</text>
+  <text x="450" y="140" text-anchor="middle" fill="#8b949e" font-size="10">Requires topology file</text>
+  <text x="450" y="160" text-anchor="middle" fill="#8b949e" font-size="10">23x speedup via multi-thread</text>
+  <rect x="360" y="180" width="80" height="24" rx="4" fill="rgba(255,123,114,.15)"/>
+  <text x="400" y="196" text-anchor="middle" fill="#ff7b72" font-size="11" font-weight="600">Slow</text>
+  <rect x="460" y="180" width="100" height="24" rx="4" fill="rgba(63,185,80,.15)"/>
+  <text x="510" y="196" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">Highest Fidelity</text>
+
+  <!-- Physical -->
+  <rect x="620" y="30" width="260" height="200" rx="10" fill="#161b22" stroke="#d2a8ff" stroke-width="1.5"/>
+  <text x="750" y="58" text-anchor="middle" fill="#d2a8ff" font-size="14" font-weight="700">SimAI-Physical</text>
+  <line x1="640" y1="68" x2="860" y2="68" stroke="#30363d"/>
+  <text x="750" y="92" text-anchor="middle" fill="#e6edf3" font-size="11">Real RDMA traffic via IB verbs</text>
+  <text x="750" y="112" text-anchor="middle" fill="#e6edf3" font-size="11">on non-GPU physical clusters</text>
+  <text x="750" y="140" text-anchor="middle" fill="#8b949e" font-size="10">Requires IB hardware</text>
+  <text x="750" y="160" text-anchor="middle" fill="#8b949e" font-size="10">Beta / experimental</text>
+  <rect x="660" y="180" width="80" height="24" rx="4" fill="rgba(240,136,62,.15)"/>
+  <text x="700" y="196" text-anchor="middle" fill="#f0883e" font-size="11" font-weight="600">Real HW</text>
+  <rect x="760" y="180" width="100" height="24" rx="4" fill="rgba(63,185,80,.15)"/>
+  <text x="810" y="196" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">Ground Truth</text>
+</svg>
+<p class="diagram-caption">Figure 2 &mdash; SimAI's three operation modes trade off speed vs. fidelity.</p>
+</div>
+
+
+<!-- ================================================================ -->
+<!-- AICB                                                              -->
+<!-- ================================================================ -->
+<h2 id="aicb">1. AICB &mdash; AI Communication Benchmark</h2>
+
+<p>
+  AICB (<a href="https://github.com/aliyun/aicb">aliyun/aicb</a>) is SimAI&rsquo;s workload generation layer.
+  Unlike generic network benchmarks (nccl-tests, perftest), AICB generates communication workloads with
+  <strong>precise patterns aligned to actual model training</strong>: the exact sequence, type, and data size
+  of every collective operation that occurs during a training iteration.
+</p>
+
+<h3 id="aicb-patterns">Communication Patterns</h3>
+
+<p>Given model parameters and a parallelism configuration, AICB produces a structured workload file listing
+every layer&rsquo;s forward/backward compute time and communication operations:</p>
+
+<pre><code>HYBRID_TRANSFORMER_FWD_IN_BCKWD model_parallel_NPU_group: 2 ep: 16 pp: 12 vpp: 8 ga: 24 all_gpus: 9216
+1789
+layer_name  fwd_compute  fwd_comm_type  fwd_comm_size  bwd_compute  bwd_comm_type  bwd_comm_size ...</code></pre>
+
+<table>
+  <tr><th>Collective</th><th>Used By</th><th>Parallelism Dimension</th></tr>
+  <tr><td><code>ALLREDUCE</code></td><td>Gradient synchronization</td><td>Data Parallelism (DP)</td></tr>
+  <tr><td><code>ALLGATHER</code></td><td>Column-parallel weight gather</td><td>Tensor Parallelism (TP)</td></tr>
+  <tr><td><code>REDUCESCATTER</code></td><td>Row-parallel gradient scatter</td><td>Tensor Parallelism (TP)</td></tr>
+  <tr><td><code>ALLTOALL</code></td><td>MoE expert dispatch/combine</td><td>Expert Parallelism (EP), intra-node</td></tr>
+  <tr><td><code>ALLTOALL_EP</code></td><td>MoE dispatch across nodes</td><td>Expert Parallelism (EP), inter-node</td></tr>
+  <tr><td><code>ALLGATHER_DP_EP</code></td><td>Gradient norms</td><td>DP+EP hybrid</td></tr>
+</table>
+
+<h3 id="aicb-aiob">AIOB &mdash; AI Operation Benchmark</h3>
+
+<p>
+  AIOB is embedded within AICB and profiles computation kernels on target GPUs to obtain real execution times.
+  SimAI supports three computation time sources:
+</p>
+
+<ol>
+  <li><strong>AIOB profiling</strong> &mdash; run kernels on target GPU, measure wallclock</li>
+  <li><strong>Parameter extrapolation</strong> &mdash; <code>T<sub>XPU</sub> = &alpha; &times; T<sub>A100</sub></code> where &alpha; = f(kernel_type, FLOPS_ratio, BW_ratio)</li>
+  <li><strong>GPU simulator</strong> &mdash; GPGPU-Sim for unknown hardware microarchitectures</li>
+</ol>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" width="800" height="200">
+  <!-- Input -->
+  <rect x="20" y="60" width="140" height="80" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="1.2"/>
+  <text x="90" y="90" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600">Model Config</text>
+  <text x="90" y="108" text-anchor="middle" fill="#8b949e" font-size="9">hidden_size, layers</text>
+  <text x="90" y="122" text-anchor="middle" fill="#8b949e" font-size="9">TP, DP, PP, EP sizes</text>
+
+  <path d="M160,100 L210,100" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- AICB core -->
+  <rect x="210" y="40" width="180" height="120" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="300" y="68" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="700">AICB Engine</text>
+  <line x1="225" y1="78" x2="375" y2="78" stroke="#30363d"/>
+  <text x="300" y="98" text-anchor="middle" fill="#e6edf3" font-size="10">Megatron / DeepSpeed</text>
+  <text x="300" y="114" text-anchor="middle" fill="#e6edf3" font-size="10">pattern extraction</text>
+  <text x="300" y="134" text-anchor="middle" fill="#8b949e" font-size="9">+ AIOB compute profiling</text>
+
+  <path d="M390,100 L440,100" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- Workload file -->
+  <rect x="440" y="60" width="140" height="80" rx="8" fill="#161b22" stroke="#3fb950" stroke-width="1.2"/>
+  <text x="510" y="90" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">workload.txt</text>
+  <text x="510" y="108" text-anchor="middle" fill="#8b949e" font-size="9">layer-by-layer</text>
+  <text x="510" y="122" text-anchor="middle" fill="#8b949e" font-size="9">compute + comm ops</text>
+
+  <path d="M580,100 L630,100" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none"/>
+
+  <!-- Consumers -->
+  <rect x="630" y="40" width="140" height="50" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="0.8"/>
+  <text x="700" y="70" text-anchor="middle" fill="#3fb950" font-size="10">astra-sim (Training)</text>
+
+  <rect x="630" y="110" width="140" height="50" rx="6" fill="#161b22" stroke="#ff7b72" stroke-width="0.8"/>
+  <text x="700" y="140" text-anchor="middle" fill="#ff7b72" font-size="10">Vidur (Inference)</text>
+
+  <path d="M580,100 L610,130 L630,130" stroke="#ff7b72" stroke-width="1" fill="none"/>
+</svg>
+<p class="diagram-caption">Figure 3 &mdash; AICB workload generation pipeline: model config &rarr; pattern extraction &rarr; workload file &rarr; consumers.</p>
+</div>
+
+
+<!-- ================================================================ -->
+<!-- ASTRA-SIM                                                         -->
+<!-- ================================================================ -->
+<h2 id="astrasim">2. Astra-sim &mdash; Framework Layer</h2>
+
+<p>
+  <strong>Astra-sim</strong> originated at Georgia Tech / Meta / Intel (ISPASS 2020, 2023).
+  SimAI extends the 1.0 branch (<code>astra-sim/astra-sim/tree/ASTRA-sim-1.0</code>) with substantial
+  modifications including MockNccl integration, fast-backend acceleration, and RDMA physical network support.
+</p>
+
+<h3 id="astrasim-layers">Three-Layer Architecture</h3>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 420" width="860" height="420">
+  <!-- Title -->
+  <text x="430" y="24" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="600" letter-spacing="1">ASTRA-SIM THREE-LAYER ARCHITECTURE</text>
+
+  <!-- ===== Workload Layer ===== -->
+  <rect x="30" y="44" width="800" height="100" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="60" y="70" fill="#58a6ff" font-size="14" font-weight="700">Workload Layer</text>
+  <text x="60" y="88" fill="#8b949e" font-size="10">Defines DNN models, parallelization strategies, training loop iteration</text>
+
+  <!-- Sub-components -->
+  <rect x="50" y="98" width="120" height="36" rx="5" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="110" y="120" text-anchor="middle" fill="#e6edf3" font-size="10">Workload.cc</text>
+
+  <rect x="185" y="98" width="100" height="36" rx="5" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="235" y="120" text-anchor="middle" fill="#e6edf3" font-size="10">Layer.cc</text>
+
+  <rect x="300" y="98" width="110" height="36" rx="5" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="355" y="120" text-anchor="middle" fill="#e6edf3" font-size="10">CSVWriter.cc</text>
+
+  <rect x="430" y="98" width="180" height="36" rx="5" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="520" y="113" text-anchor="middle" fill="#e6edf3" font-size="10">Parallelism policies:</text>
+  <text x="520" y="127" text-anchor="middle" fill="#58a6ff" font-size="9">Data | Tensor | Pipeline | Hybrid</text>
+
+  <rect x="625" y="98" width="185" height="36" rx="5" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="717" y="113" text-anchor="middle" fill="#e6edf3" font-size="10">Loop states:</text>
+  <text x="717" y="127" text-anchor="middle" fill="#58a6ff" font-size="9">Fwd | WeightGrad | InputGrad</text>
+
+  <!-- Arrow down -->
+  <path d="M430,144 L430,160" stroke="#3fb950" stroke-width="2" marker-end="url(#arrow-g)" fill="none"/>
+
+  <!-- ===== System Layer ===== -->
+  <rect x="30" y="164" width="800" height="120" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="60" y="190" fill="#3fb950" font-size="14" font-weight="700">System Layer</text>
+  <text x="60" y="208" fill="#8b949e" font-size="10">Core scheduling engine &mdash; event-driven simulation, stream management, collective algorithms</text>
+
+  <rect x="50" y="218" width="90" height="52" rx="5" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.6"/>
+  <text x="95" y="237" text-anchor="middle" fill="#e6edf3" font-size="10">Sys.cc</text>
+  <text x="95" y="253" text-anchor="middle" fill="#8b949e" font-size="8">Event loop</text>
+  <text x="95" y="263" text-anchor="middle" fill="#8b949e" font-size="8">2100+ lines</text>
+
+  <rect x="155" y="218" width="105" height="52" rx="5" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.6"/>
+  <text x="207" y="237" text-anchor="middle" fill="#e6edf3" font-size="10">Collectives</text>
+  <text x="207" y="253" text-anchor="middle" fill="#8b949e" font-size="8">Ring, Tree, DBT</text>
+  <text x="207" y="263" text-anchor="middle" fill="#8b949e" font-size="8">HalvingDoubling</text>
+
+  <rect x="275" y="218" width="90" height="52" rx="5" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.6"/>
+  <text x="320" y="237" text-anchor="middle" fill="#e6edf3" font-size="10">Streams</text>
+  <text x="320" y="253" text-anchor="middle" fill="#8b949e" font-size="8">BaseStream</text>
+  <text x="320" y="263" text-anchor="middle" fill="#8b949e" font-size="8">DataSet</text>
+
+  <rect x="380" y="218" width="100" height="52" rx="5" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.6"/>
+  <text x="430" y="237" text-anchor="middle" fill="#e6edf3" font-size="10">MemBus</text>
+  <text x="430" y="253" text-anchor="middle" fill="#8b949e" font-size="8">LogGP model</text>
+  <text x="430" y="263" text-anchor="middle" fill="#8b949e" font-size="8">NPU &harr; Memory</text>
+
+  <rect x="495" y="218" width="110" height="52" rx="5" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.6"/>
+  <text x="550" y="237" text-anchor="middle" fill="#e6edf3" font-size="10">MockNccl</text>
+  <text x="550" y="253" text-anchor="middle" fill="#8b949e" font-size="8">NCCL algorithm</text>
+  <text x="550" y="263" text-anchor="middle" fill="#8b949e" font-size="8">selection &amp; tuning</text>
+
+  <rect x="620" y="218" width="90" height="52" rx="5" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.6"/>
+  <text x="665" y="237" text-anchor="middle" fill="#e6edf3" font-size="10">Topology</text>
+  <text x="665" y="253" text-anchor="middle" fill="#8b949e" font-size="8">Ring, BTree</text>
+  <text x="665" y="263" text-anchor="middle" fill="#8b949e" font-size="8">Complex</text>
+
+  <rect x="725" y="218" width="90" height="52" rx="5" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.6"/>
+  <text x="770" y="237" text-anchor="middle" fill="#e6edf3" font-size="10">Scheduling</text>
+  <text x="770" y="253" text-anchor="middle" fill="#8b949e" font-size="8">FIFO, LIFO</text>
+  <text x="770" y="263" text-anchor="middle" fill="#8b949e" font-size="8">OfflineGreedy</text>
+
+  <!-- Arrow down -->
+  <path d="M430,284 L430,300" stroke="#f0883e" stroke-width="2" marker-end="url(#arrow-o)" fill="none"/>
+
+  <!-- ===== Network Layer ===== -->
+  <rect x="30" y="304" width="800" height="100" rx="10" fill="#161b22" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="60" y="330" fill="#f0883e" font-size="14" font-weight="700">Network Layer</text>
+  <text x="60" y="348" fill="#8b949e" font-size="10">Pluggable backends via AstraNetworkAPI &mdash; sim_send() / sim_recv() / sim_schedule()</text>
+
+  <rect x="50" y="358" width="220" height="36" rx="5" fill="#3d2a0d" stroke="#f0883e" stroke-width="0.6"/>
+  <text x="160" y="374" text-anchor="middle" fill="#f0883e" font-size="10" font-weight="600">Analytical</text>
+  <text x="160" y="388" text-anchor="middle" fill="#8b949e" font-size="9">busbw lookup &middot; O(1)</text>
+
+  <rect x="290" y="358" width="240" height="36" rx="5" fill="#3d2a0d" stroke="#f0883e" stroke-width="0.6"/>
+  <text x="410" y="374" text-anchor="middle" fill="#f0883e" font-size="10" font-weight="600">ns-3 Simulation</text>
+  <text x="410" y="388" text-anchor="middle" fill="#8b949e" font-size="9">packet-level &middot; RDMA &middot; congestion</text>
+
+  <rect x="550" y="358" width="260" height="36" rx="5" fill="#3d2a0d" stroke="#f0883e" stroke-width="0.6"/>
+  <text x="680" y="374" text-anchor="middle" fill="#f0883e" font-size="10" font-weight="600">Physical / RDMA</text>
+  <text x="680" y="388" text-anchor="middle" fill="#8b949e" font-size="9">real IB verbs on non-GPU clusters</text>
+</svg>
+<p class="diagram-caption">Figure 4 &mdash; Astra-sim&rsquo;s three-layer architecture: Workload &rarr; System &rarr; Network, each independently configurable.</p>
+</div>
+
+<h3 id="astrasim-event">Event-Driven Simulation Engine</h3>
+
+<p>
+  The <code>Sys</code> class (2100+ lines) is the core of each simulated GPU. One <code>Sys</code> instance
+  exists per rank. It maintains an <strong>event queue</strong> indexed by tick time:
+</p>
+
+<pre><code>std::map&lt;Tick, std::list&lt;std::tuple&lt;Callable*, EventType, CallData*&gt;&gt;&gt; event_queue;</code></pre>
+
+<p>Events include:</p>
+<table>
+  <tr><th>Category</th><th>Event Types</th></tr>
+  <tr><td>Compute</td><td><code>TX_DMA</code>, <code>RX_DMA</code>, <code>Processing_Finished</code></td></tr>
+  <tr><td>Communication</td><td><code>PacketReceived</code>, <code>PacketSent</code>, <code>RendezvousSend</code>, <code>RendezvousRecv</code></td></tr>
+  <tr><td>Collectives</td><td><code>NCCL_General</code>, <code>Wight_Grad_Comm_Finished</code>, <code>Input_Grad_Comm_Finished</code></td></tr>
+  <tr><td>Workload</td><td><code>Workload_Wait</code>, <code>Consider_Process</code>, <code>Consider_Retire</code></td></tr>
+</table>
+
+<h3 id="astrasim-training">Training Loop State Machine</h3>
+
+<p>
+  The <code>Workload</code> class iterates through training layers following a finite state machine.
+  Each <code>Layer</code> object tracks three phases, each with its own compute time and communication:
+</p>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 300" width="820" height="300">
+  <text x="410" y="24" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="600" letter-spacing="1">TRAINING ITERATION STATE MACHINE (PER LAYER)</text>
+
+  <!-- Forward Pass -->
+  <rect x="30" y="50" width="220" height="90" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="140" y="78" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="700">Forward Pass</text>
+  <text x="140" y="98" text-anchor="middle" fill="#e6edf3" font-size="10">fwd_compute_time</text>
+  <text x="140" y="114" text-anchor="middle" fill="#8b949e" font-size="10">+ fwd_comm (AllGather / RS)</text>
+  <text x="140" y="130" text-anchor="middle" fill="#3fb950" font-size="9">TP dimension</text>
+
+  <path d="M250,95 L300,95" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- Input Gradient -->
+  <rect x="300" y="50" width="220" height="90" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="410" y="78" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="700">Input Gradient</text>
+  <text x="410" y="98" text-anchor="middle" fill="#e6edf3" font-size="10">input_grad_compute_time</text>
+  <text x="410" y="114" text-anchor="middle" fill="#8b949e" font-size="10">+ ig_comm (AllReduce)</text>
+  <text x="410" y="130" text-anchor="middle" fill="#58a6ff" font-size="9">TP dimension</text>
+
+  <path d="M520,95 L570,95" stroke="#d2a8ff" stroke-width="2" marker-end="url(#arrow-p)" fill="none"/>
+
+  <!-- Weight Gradient -->
+  <rect x="570" y="50" width="220" height="90" rx="10" fill="#161b22" stroke="#d2a8ff" stroke-width="1.5"/>
+  <text x="680" y="78" text-anchor="middle" fill="#d2a8ff" font-size="13" font-weight="700">Weight Gradient</text>
+  <text x="680" y="98" text-anchor="middle" fill="#e6edf3" font-size="10">weight_grad_compute_time</text>
+  <text x="680" y="114" text-anchor="middle" fill="#8b949e" font-size="10">+ wg_comm (AllReduce)</text>
+  <text x="680" y="130" text-anchor="middle" fill="#d2a8ff" font-size="9">DP dimension</text>
+
+  <!-- Overlap arrow -->
+  <path d="M680,140 Q680,180 530,180 Q410,180 410,210" stroke="#f0883e" stroke-width="1.5" stroke-dasharray="5,3" fill="none"/>
+  <text x="560" y="175" fill="#f0883e" font-size="9">WG comm overlaps with next layer&rsquo;s IG compute</text>
+
+  <!-- Next layer -->
+  <rect x="300" y="210" width="220" height="50" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="410" y="240" text-anchor="middle" fill="#8b949e" font-size="11">Next Layer (Input Gradient)</text>
+
+  <!-- PP bubble note -->
+  <rect x="30" y="190" width="220" height="70" rx="8" fill="#161b22" stroke="#f0883e" stroke-width="0.8"/>
+  <text x="140" y="215" text-anchor="middle" fill="#f0883e" font-size="11" font-weight="600">Pipeline Bubble</text>
+  <text x="140" y="235" text-anchor="middle" fill="#8b949e" font-size="9">bubble = (PP-1) / (GA &times; VPP)</text>
+  <text x="140" y="250" text-anchor="middle" fill="#8b949e" font-size="9">from Layer.cc formula</text>
+</svg>
+<p class="diagram-caption">Figure 5 &mdash; Per-layer training phases. Weight gradient communication overlaps with the next layer&rsquo;s input gradient compute.</p>
+</div>
+
+<h3 id="astrasim-simai-ext">SimAI Extensions to Astra-sim</h3>
+
+<table>
+  <tr><th>Extension</th><th>Files</th><th>Purpose</th></tr>
+  <tr>
+    <td><strong>MockNccl Integration</strong></td>
+    <td><code>MockNccl.h</code>, <code>MockNcclGroup.h/cc</code>, <code>MockNcclChannel.h</code></td>
+    <td>Faithful simulation of NCCL algorithm/protocol selection, topology-aware routing. 6 algorithms, 3 protocols, hardware-specific latency tables.</td>
+  </tr>
+  <tr>
+    <td><strong>Fast-Backend</strong></td>
+    <td><code>fast-backend/FastBackEnd.hh/cc</code></td>
+    <td>Learned latency prediction via dynamic interpolation. Replays pre-learned patterns instead of detailed packet simulation.</td>
+  </tr>
+  <tr>
+    <td><strong>Physical RDMA</strong></td>
+    <td><code>phynet/SimAiPhyNetwork.h</code>, <code>SimAiFlowModelRdma.hh</code></td>
+    <td>Real network I/O via InfiniBand verbs. QP management, memory registration, send/receive work requests.</td>
+  </tr>
+  <tr>
+    <td><strong>GPU Type Support</strong></td>
+    <td><code>Common.hh</code></td>
+    <td>Enum: A100, A800, H100, H800, H20 with per-GPU performance characteristics.</td>
+  </tr>
+  <tr>
+    <td><strong>Multi-thread Acceleration</strong></td>
+    <td><code>Sys.cc</code></td>
+    <td>Lock-free global context sharing via <code>std::atomic</code>. Achieves 23&times; speedup.</td>
+  </tr>
+</table>
+
+
+<!-- ================================================================ -->
+<!-- SimCCL                                                            -->
+<!-- ================================================================ -->
+<h2 id="simccl">3. SimCCL &mdash; Collective Communication Library Simulator</h2>
+
+<p>
+  <strong>SimCCL</strong> (<a href="https://github.com/aliyun/SimCCL">aliyun/SimCCL</a>) decomposes
+  high-level collective operations into sets of point-to-point (P2P) Send/Recv operations, faithfully
+  reproducing NCCL&rsquo;s behavior without requiring GPUs. Only <strong>572 lines</strong> from the NCCL
+  codebase are essential &mdash; algorithm selection, chunking, and channel assignment logic.
+</p>
+
+<h3 id="simccl-algorithms">Algorithms &amp; Protocols</h3>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 340" width="860" height="340">
+  <text x="430" y="24" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="600" letter-spacing="1">NCCL ALGORITHM &times; PROTOCOL MATRIX</text>
+
+  <!-- Header row -->
+  <rect x="190" y="44" width="200" height="30" rx="4" fill="#1a3a5c"/>
+  <text x="290" y="64" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600">LL (Low Latency)</text>
+  <rect x="400" y="44" width="200" height="30" rx="4" fill="#1a3a5c"/>
+  <text x="500" y="64" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600">LL128</text>
+  <rect x="610" y="44" width="200" height="30" rx="4" fill="#1a3a5c"/>
+  <text x="710" y="64" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="600">Simple</text>
+
+  <!-- Row labels + cells -->
+  <!-- Tree -->
+  <rect x="20" y="84" width="160" height="34" rx="4" fill="#2a1a4a"/>
+  <text x="100" y="106" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="600">Tree</text>
+  <rect x="190" y="84" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="290" y="106" text-anchor="middle" fill="#8b949e" font-size="10">base: 6.8 &mu;s</text>
+  <rect x="400" y="84" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="500" y="106" text-anchor="middle" fill="#8b949e" font-size="10">base: 6.6 &mu;s</text>
+  <rect x="610" y="84" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="710" y="106" text-anchor="middle" fill="#e6edf3" font-size="10">base: 8.4 &mu;s</text>
+
+  <!-- Ring -->
+  <rect x="20" y="128" width="160" height="34" rx="4" fill="#2a1a4a"/>
+  <text x="100" y="150" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="600">Ring</text>
+  <rect x="190" y="128" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="290" y="150" text-anchor="middle" fill="#8b949e" font-size="10">base: 3.8 &mu;s</text>
+  <rect x="400" y="128" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="500" y="150" text-anchor="middle" fill="#8b949e" font-size="10">base: 6.6 &mu;s</text>
+  <rect x="610" y="128" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="710" y="150" text-anchor="middle" fill="#e6edf3" font-size="10">base: 5.7 &mu;s</text>
+
+  <!-- NVLS -->
+  <rect x="20" y="172" width="160" height="34" rx="4" fill="#2a1a4a"/>
+  <text x="100" y="194" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="600">NVLS</text>
+  <rect x="190" y="172" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="290" y="194" text-anchor="middle" fill="#8b949e" font-size="10">&mdash;</text>
+  <rect x="400" y="172" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="500" y="194" text-anchor="middle" fill="#8b949e" font-size="10">&mdash;</text>
+  <rect x="610" y="172" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="710" y="194" text-anchor="middle" fill="#e6edf3" font-size="10">H100/H800 only</text>
+
+  <!-- NVLS-Tree -->
+  <rect x="20" y="216" width="160" height="34" rx="4" fill="#2a1a4a"/>
+  <text x="100" y="238" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="600">NVLS-Tree</text>
+  <rect x="190" y="216" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="290" y="238" text-anchor="middle" fill="#8b949e" font-size="10">&mdash;</text>
+  <rect x="400" y="216" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="500" y="238" text-anchor="middle" fill="#8b949e" font-size="10">&mdash;</text>
+  <rect x="610" y="216" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="710" y="238" text-anchor="middle" fill="#e6edf3" font-size="10">Multi-node NVLS</text>
+
+  <!-- CollNet -->
+  <rect x="20" y="260" width="160" height="34" rx="4" fill="#2a1a4a"/>
+  <text x="100" y="282" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="600">CollNet Direct/Chain</text>
+  <rect x="190" y="260" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="290" y="282" text-anchor="middle" fill="#8b949e" font-size="10">&mdash;</text>
+  <rect x="400" y="260" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="500" y="282" text-anchor="middle" fill="#8b949e" font-size="10">&mdash;</text>
+  <rect x="610" y="260" width="200" height="34" rx="4" fill="#161b22" stroke="#30363d"/>
+  <text x="710" y="282" text-anchor="middle" fill="#e6edf3" font-size="10">InfiniBand SHARP</text>
+
+  <!-- Note -->
+  <text x="430" y="320" text-anchor="middle" fill="#8b949e" font-size="10">Latency values from MockNccl.h hwLat tables &mdash; NVLink tier. Per-channel max BW: H100 Ring Simple = 36 GB/s</text>
+</svg>
+<p class="diagram-caption">Figure 6 &mdash; NCCL algorithm &times; protocol matrix modeled by SimCCL. Each cell has hardware-specific latency/bandwidth constants.</p>
+</div>
+
+<h3 id="simccl-decomposition">P2P Decomposition Flow</h3>
+
+<p>
+  The core decomposition happens in <code>MockNcclGroup::genFlowModels()</code>. It takes a collective
+  specification and produces a map of <code>SingleFlow</code> objects &mdash; each representing one P2P transfer
+  with explicit dependencies:
+</p>
+
+<pre><code>struct SingleFlow {
+  int flow_id;                    // Unique flow identifier
+  int src, dest;                  // Source and destination ranks
+  uint64_t flow_size;             // Data size for this flow
+  vector&lt;int&gt; parent_flow_id;     // Flows that must complete first
+  vector&lt;int&gt; child_flow_id;      // Flows dependent on this one
+  int channel_id;                 // Which channel (for multi-channel)
+  int chunk_id;                   // Which chunk (for pipelining)
+  string conn_type;               // "RING", "PXN_INIT", etc.
+};</code></pre>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 380" width="860" height="380">
+  <text x="430" y="24" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="600" letter-spacing="1">RING ALLREDUCE DECOMPOSITION (4 RANKS, 1 CHANNEL)</text>
+
+  <!-- Phase labels -->
+  <text x="230" y="55" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="600">Phase 1: Reduce-Scatter</text>
+  <text x="630" y="55" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="600">Phase 2: AllGather</text>
+  <line x1="430" y1="44" x2="430" y2="360" stroke="#30363d" stroke-dasharray="4,4"/>
+
+  <!-- Rank labels -->
+  <text x="30" y="110" fill="#e6edf3" font-size="11" font-weight="600">Rank 0</text>
+  <text x="30" y="175" fill="#e6edf3" font-size="11" font-weight="600">Rank 1</text>
+  <text x="30" y="240" fill="#e6edf3" font-size="11" font-weight="600">Rank 2</text>
+  <text x="30" y="305" fill="#e6edf3" font-size="11" font-weight="600">Rank 3</text>
+
+  <!-- Step labels -->
+  <text x="140" y="75" text-anchor="middle" fill="#8b949e" font-size="10">Step 1</text>
+  <text x="230" y="75" text-anchor="middle" fill="#8b949e" font-size="10">Step 2</text>
+  <text x="320" y="75" text-anchor="middle" fill="#8b949e" font-size="10">Step 3</text>
+  <text x="510" y="75" text-anchor="middle" fill="#8b949e" font-size="10">Step 4</text>
+  <text x="600" y="75" text-anchor="middle" fill="#8b949e" font-size="10">Step 5</text>
+  <text x="690" y="75" text-anchor="middle" fill="#8b949e" font-size="10">Step 6</text>
+
+  <!-- Rank horizontal lines -->
+  <line x1="80" y1="105" x2="760" y2="105" stroke="#30363d" stroke-width="0.5"/>
+  <line x1="80" y1="170" x2="760" y2="170" stroke="#30363d" stroke-width="0.5"/>
+  <line x1="80" y1="235" x2="760" y2="235" stroke="#30363d" stroke-width="0.5"/>
+  <line x1="80" y1="300" x2="760" y2="300" stroke="#30363d" stroke-width="0.5"/>
+
+  <!-- RS Step 1: 3->0, 0->1, 1->2, 2->3 -->
+  <path d="M120,300 L120,115" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none" opacity="0.7"/>
+  <path d="M140,105 L140,160" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none" opacity="0.7"/>
+  <path d="M155,170 L155,225" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none" opacity="0.7"/>
+  <path d="M170,235 L170,290" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none" opacity="0.7"/>
+
+  <!-- RS Step 2 -->
+  <path d="M210,300 L210,115" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none" opacity="0.7"/>
+  <path d="M230,105 L230,160" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none" opacity="0.7"/>
+  <path d="M245,170 L245,225" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none" opacity="0.7"/>
+  <path d="M260,235 L260,290" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none" opacity="0.7"/>
+
+  <!-- RS Step 3 -->
+  <path d="M300,300 L300,115" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none" opacity="0.7"/>
+  <path d="M320,105 L320,160" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none" opacity="0.7"/>
+  <path d="M335,170 L335,225" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none" opacity="0.7"/>
+  <path d="M350,235 L350,290" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrow-g)" fill="none" opacity="0.7"/>
+
+  <!-- AG Step 4-6 (blue) -->
+  <path d="M490,300 L490,115" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none" opacity="0.7"/>
+  <path d="M510,105 L510,160" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none" opacity="0.7"/>
+  <path d="M525,170 L525,225" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none" opacity="0.7"/>
+  <path d="M540,235 L540,290" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none" opacity="0.7"/>
+
+  <path d="M580,300 L580,115" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none" opacity="0.7"/>
+  <path d="M600,105 L600,160" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none" opacity="0.7"/>
+  <path d="M615,170 L615,225" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none" opacity="0.7"/>
+  <path d="M630,235 L630,290" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none" opacity="0.7"/>
+
+  <path d="M670,300 L670,115" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none" opacity="0.7"/>
+  <path d="M690,105 L690,160" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none" opacity="0.7"/>
+  <path d="M705,170 L705,225" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none" opacity="0.7"/>
+  <path d="M720,235 L720,290" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none" opacity="0.7"/>
+
+  <!-- Annotation -->
+  <text x="430" y="370" text-anchor="middle" fill="#8b949e" font-size="10">2 &times; (N-1) = 6 steps total. Each arrow is one SingleFlow with msg_bytes = data_size / N / n_channels</text>
+</svg>
+<p class="diagram-caption">Figure 7 &mdash; Ring AllReduce decomposed into P2P flows: 3 Reduce-Scatter steps + 3 AllGather steps for 4 ranks.</p>
+</div>
+
+<h3 id="simccl-busbw">Bus Bandwidth Calculation</h3>
+
+<p>
+  <code>calbusbw.cc</code> computes effective bus bandwidth for each algorithm, factoring in hardware topology:
+</p>
+
+<table>
+  <tr><th>GPU</th><th>NVLink BW</th><th>PCIe BW</th><th>NIC BW</th><th>NVLS BW</th></tr>
+  <tr><td>H100</td><td>18 &times; 20.6 = 370.8 GB/s</td><td>51.2 GB/s (Gen5)</td><td>48.5 GB/s (CX-7)</td><td>475.0 GB/s</td></tr>
+  <tr><td>H800</td><td>8 &times; 20.6 = 164.8 GB/s</td><td>51.2 GB/s</td><td>48.5 GB/s</td><td>215.0 GB/s</td></tr>
+  <tr><td>A100</td><td>12 &times; 20.0 = 240.0 GB/s</td><td>25.6 GB/s (Gen4)</td><td>23.5 GB/s (CX-6)</td><td>&mdash;</td></tr>
+</table>
+
+<p>The effective bus bandwidth is computed as:</p>
+<pre><code>Ring:  busbw = min(nvlink_bw, nic_bw &times; nics_per_node) &times; (N-1)/N
+Tree:  busbw = min(nvlink_bw/2, nic_bw &times; nics) &times; (N-1)/N  [with correction factors]
+NVLS:  busbw = nvls_bw &times; gpus / (gpus-1)                      [H100/H800 only]
+Best:  max(ring, tree, nvls)</code></pre>
+
+
+<!-- ================================================================ -->
+<!-- NS-3                                                              -->
+<!-- ================================================================ -->
+<h2 id="ns3">4. ns-3 &mdash; Network Simulation</h2>
+
+<p>
+  <strong>ns-3-alibabacloud</strong> (<a href="https://github.com/aliyun/ns-3-alibabacloud">aliyun/ns-3-alibabacloud</a>)
+  provides packet-level network simulation for both intra-node (scale-up) and inter-node (scale-out) networks.
+  This is the highest-fidelity backend, used in SimAI-Simulation mode.
+</p>
+
+<h3 id="ns3-scaleup">Scale-Up Network (Intra-Node)</h3>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 260" width="700" height="260">
+  <text x="350" y="24" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="600" letter-spacing="1">INTRA-NODE: NVSwitch TOPOLOGY (8 GPUs)</text>
+
+  <!-- NVSwitches -->
+  <rect x="120" y="50" width="100" height="30" rx="6" fill="#3d2a0d" stroke="#f0883e" stroke-width="1"/>
+  <text x="170" y="70" text-anchor="middle" fill="#f0883e" font-size="10">NVSwitch 0</text>
+  <rect x="300" y="50" width="100" height="30" rx="6" fill="#3d2a0d" stroke="#f0883e" stroke-width="1"/>
+  <text x="350" y="70" text-anchor="middle" fill="#f0883e" font-size="10">NVSwitch 1</text>
+  <rect x="480" y="50" width="100" height="30" rx="6" fill="#3d2a0d" stroke="#f0883e" stroke-width="1"/>
+  <text x="530" y="70" text-anchor="middle" fill="#f0883e" font-size="10">NVSwitch 2</text>
+
+  <!-- GPUs -->
+  <g id="gpus">
+    <rect x="40" y="140" width="60" height="40" rx="5" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="70" y="165" text-anchor="middle" fill="#3fb950" font-size="10">GPU 0</text>
+    <rect x="120" y="140" width="60" height="40" rx="5" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="150" y="165" text-anchor="middle" fill="#3fb950" font-size="10">GPU 1</text>
+    <rect x="200" y="140" width="60" height="40" rx="5" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="230" y="165" text-anchor="middle" fill="#3fb950" font-size="10">GPU 2</text>
+    <rect x="280" y="140" width="60" height="40" rx="5" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="310" y="165" text-anchor="middle" fill="#3fb950" font-size="10">GPU 3</text>
+    <rect x="360" y="140" width="60" height="40" rx="5" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="390" y="165" text-anchor="middle" fill="#3fb950" font-size="10">GPU 4</text>
+    <rect x="440" y="140" width="60" height="40" rx="5" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="470" y="165" text-anchor="middle" fill="#3fb950" font-size="10">GPU 5</text>
+    <rect x="520" y="140" width="60" height="40" rx="5" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="550" y="165" text-anchor="middle" fill="#3fb950" font-size="10">GPU 6</text>
+    <rect x="600" y="140" width="60" height="40" rx="5" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="630" y="165" text-anchor="middle" fill="#3fb950" font-size="10">GPU 7</text>
+  </g>
+
+  <!-- NVLink connections (simplified - show a few) -->
+  <line x1="70" y1="140" x2="170" y2="80" stroke="#f0883e" stroke-width="0.6" opacity="0.4"/>
+  <line x1="150" y1="140" x2="170" y2="80" stroke="#f0883e" stroke-width="0.6" opacity="0.4"/>
+  <line x1="230" y1="140" x2="170" y2="80" stroke="#f0883e" stroke-width="0.6" opacity="0.4"/>
+  <line x1="310" y1="140" x2="350" y2="80" stroke="#f0883e" stroke-width="0.6" opacity="0.4"/>
+  <line x1="390" y1="140" x2="350" y2="80" stroke="#f0883e" stroke-width="0.6" opacity="0.4"/>
+  <line x1="470" y1="140" x2="530" y2="80" stroke="#f0883e" stroke-width="0.6" opacity="0.4"/>
+  <line x1="550" y1="140" x2="530" y2="80" stroke="#f0883e" stroke-width="0.6" opacity="0.4"/>
+  <line x1="630" y1="140" x2="530" y2="80" stroke="#f0883e" stroke-width="0.6" opacity="0.4"/>
+  <!-- Cross connections -->
+  <line x1="70" y1="140" x2="350" y2="80" stroke="#f0883e" stroke-width="0.4" opacity="0.2"/>
+  <line x1="310" y1="140" x2="530" y2="80" stroke="#f0883e" stroke-width="0.4" opacity="0.2"/>
+  <line x1="470" y1="140" x2="170" y2="80" stroke="#f0883e" stroke-width="0.4" opacity="0.2"/>
+  <line x1="630" y1="140" x2="350" y2="80" stroke="#f0883e" stroke-width="0.4" opacity="0.2"/>
+
+  <!-- NICs at bottom -->
+  <rect x="40" y="200" width="60" height="24" rx="4" fill="#161b22" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="70" y="216" text-anchor="middle" fill="#58a6ff" font-size="8">NIC</text>
+  <rect x="600" y="200" width="60" height="24" rx="4" fill="#161b22" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="630" y="216" text-anchor="middle" fill="#58a6ff" font-size="8">NIC</text>
+  <line x1="70" y1="180" x2="70" y2="200" stroke="#58a6ff" stroke-width="0.6"/>
+  <line x1="630" y1="180" x2="630" y2="200" stroke="#58a6ff" stroke-width="0.6"/>
+
+  <text x="350" y="248" text-anchor="middle" fill="#8b949e" font-size="10">All 8 GPUs fully connected via 3 NVSwitches (H100 DGX). NICs for inter-node communication.</text>
+</svg>
+<p class="diagram-caption">Figure 8 &mdash; Intra-node NVSwitch topology. Each GPU has 18 NVLink connections distributed across NVSwitches.</p>
+</div>
+
+<h3 id="ns3-scaleout">Scale-Out Network (Inter-Node)</h3>
+
+<p>The inter-node network supports multiple transport and congestion control options:</p>
+
+<table>
+  <tr><th>Feature</th><th>Options</th></tr>
+  <tr><td>Transport</td><td>RDMA (RoCEv2), TCP</td></tr>
+  <tr><td>Congestion Control</td><td>DCQCN, HPCC, Swift, Timely</td></tr>
+  <tr><td>Link Layer</td><td>PFC (Priority Flow Control), ECN marking</td></tr>
+  <tr><td>Routing</td><td>ECMP, Adaptive Routing (AR)</td></tr>
+  <tr><td>Topologies</td><td>Fat-tree/Clos, Alibaba HPN 7.0/6.2, Spectrum-X, DCN+, Torus</td></tr>
+  <tr><td>Frame Size</td><td>9000B (jumbo frames)</td></tr>
+</table>
+
+<h3 id="ns3-topo">Topology Generation</h3>
+
+<p>
+  <code>gen_Topo_Template.py</code> generates topology files describing GPU-NVSwitch-ASW-PSW connectivity:
+</p>
+
+<pre><code>python3 gen_Topo_Template.py \
+  -topo Spectrum-X \     # Topology template
+  -g 128 \               # Total GPUs
+  -gt A100 \             # GPU type
+  -bw 100Gbps \          # Inter-node link bandwidth
+  -nvbw 2400Gbps         # Intra-node NVLink bandwidth</code></pre>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 280" width="800" height="280">
+  <text x="400" y="24" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="600" letter-spacing="1">MULTI-NODE FAT-TREE / CLOS TOPOLOGY</text>
+
+  <!-- PSW (spine) -->
+  <rect x="200" y="44" width="80" height="30" rx="5" fill="#3d1a1a" stroke="#ff7b72" stroke-width="1"/>
+  <text x="240" y="64" text-anchor="middle" fill="#ff7b72" font-size="9">PSW 0</text>
+  <rect x="360" y="44" width="80" height="30" rx="5" fill="#3d1a1a" stroke="#ff7b72" stroke-width="1"/>
+  <text x="400" y="64" text-anchor="middle" fill="#ff7b72" font-size="9">PSW 1</text>
+  <rect x="520" y="44" width="80" height="30" rx="5" fill="#3d1a1a" stroke="#ff7b72" stroke-width="1"/>
+  <text x="560" y="64" text-anchor="middle" fill="#ff7b72" font-size="9">PSW 2</text>
+
+  <!-- ASW (leaf) -->
+  <rect x="80" y="120" width="70" height="30" rx="5" fill="#2a1a4a" stroke="#d2a8ff" stroke-width="1"/>
+  <text x="115" y="140" text-anchor="middle" fill="#d2a8ff" font-size="9">ASW 0</text>
+  <rect x="250" y="120" width="70" height="30" rx="5" fill="#2a1a4a" stroke="#d2a8ff" stroke-width="1"/>
+  <text x="285" y="140" text-anchor="middle" fill="#d2a8ff" font-size="9">ASW 1</text>
+  <rect x="450" y="120" width="70" height="30" rx="5" fill="#2a1a4a" stroke="#d2a8ff" stroke-width="1"/>
+  <text x="485" y="140" text-anchor="middle" fill="#d2a8ff" font-size="9">ASW 2</text>
+  <rect x="640" y="120" width="70" height="30" rx="5" fill="#2a1a4a" stroke="#d2a8ff" stroke-width="1"/>
+  <text x="675" y="140" text-anchor="middle" fill="#d2a8ff" font-size="9">ASW 3</text>
+
+  <!-- Spine-Leaf links -->
+  <line x1="115" y1="120" x2="240" y2="74" stroke="#ff7b72" stroke-width="0.5" opacity="0.4"/>
+  <line x1="115" y1="120" x2="400" y2="74" stroke="#ff7b72" stroke-width="0.5" opacity="0.4"/>
+  <line x1="285" y1="120" x2="240" y2="74" stroke="#ff7b72" stroke-width="0.5" opacity="0.4"/>
+  <line x1="285" y1="120" x2="400" y2="74" stroke="#ff7b72" stroke-width="0.5" opacity="0.4"/>
+  <line x1="485" y1="120" x2="400" y2="74" stroke="#ff7b72" stroke-width="0.5" opacity="0.4"/>
+  <line x1="485" y1="120" x2="560" y2="74" stroke="#ff7b72" stroke-width="0.5" opacity="0.4"/>
+  <line x1="675" y1="120" x2="560" y2="74" stroke="#ff7b72" stroke-width="0.5" opacity="0.4"/>
+  <line x1="675" y1="120" x2="240" y2="74" stroke="#ff7b72" stroke-width="0.5" opacity="0.2"/>
+
+  <!-- Nodes -->
+  <rect x="40" y="195" width="150" height="60" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="0.8"/>
+  <text x="115" y="215" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="600">Node 0 (8 GPUs)</text>
+  <text x="115" y="232" text-anchor="middle" fill="#8b949e" font-size="8">NVSwitch + NVLink</text>
+  <text x="115" y="246" text-anchor="middle" fill="#8b949e" font-size="8">370.8 GB/s intra</text>
+
+  <rect x="210" y="195" width="150" height="60" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="0.8"/>
+  <text x="285" y="215" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="600">Node 1 (8 GPUs)</text>
+  <text x="285" y="232" text-anchor="middle" fill="#8b949e" font-size="8">NVSwitch + NVLink</text>
+  <text x="285" y="246" text-anchor="middle" fill="#8b949e" font-size="8">370.8 GB/s intra</text>
+
+  <rect x="410" y="195" width="150" height="60" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="0.8"/>
+  <text x="485" y="215" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="600">Node 2 (8 GPUs)</text>
+
+  <rect x="600" y="195" width="150" height="60" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="0.8"/>
+  <text x="675" y="215" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="600">Node 3 (8 GPUs)</text>
+
+  <!-- Node-ASW links -->
+  <line x1="115" y1="195" x2="115" y2="150" stroke="#d2a8ff" stroke-width="0.5"/>
+  <line x1="285" y1="195" x2="285" y2="150" stroke="#d2a8ff" stroke-width="0.5"/>
+  <line x1="485" y1="195" x2="485" y2="150" stroke="#d2a8ff" stroke-width="0.5"/>
+  <line x1="675" y1="195" x2="675" y2="150" stroke="#d2a8ff" stroke-width="0.5"/>
+
+  <!-- Labels -->
+  <text x="40" y="275" fill="#8b949e" font-size="9">PSW = Pod-level Spine Switch &nbsp;&nbsp; ASW = Aggregation/Leaf Switch &nbsp;&nbsp; Inter-node: 48.5 GB/s (400G IB)</text>
+</svg>
+<p class="diagram-caption">Figure 9 &mdash; Multi-node fat-tree topology. GPUs within each node connect via NVSwitches; nodes connect via leaf-spine Clos fabric.</p>
+</div>
+
+
+<!-- ================================================================ -->
+<!-- VIDUR                                                             -->
+<!-- ================================================================ -->
+<h2 id="vidur">5. Vidur &mdash; Inference Simulation</h2>
+
+<p>
+  <strong>Vidur</strong> (originally from Microsoft Research, MLSys 2024) is an LLM inference simulator.
+  Alibaba&rsquo;s fork (<code>vidur-alibabacloud</code>) adds SimAI-backed communication time prediction,
+  prefill/decode disaggregation (inspired by Splitwise), and MoE model support.
+</p>
+
+<h3 id="vidur-events">Event-Driven Simulation Loop</h3>
+
+<p>
+  The <code>Simulator</code> class uses a min-heap priority queue. Events are processed in time order:
+</p>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 320" width="860" height="320">
+  <text x="430" y="24" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="600" letter-spacing="1">VIDUR INFERENCE EVENT FLOW</text>
+
+  <!-- Event chain -->
+  <rect x="20" y="60" width="150" height="50" rx="8" fill="#161b22" stroke="#ff7b72" stroke-width="1.2"/>
+  <text x="95" y="82" text-anchor="middle" fill="#ff7b72" font-size="10" font-weight="600">RequestArrival</text>
+  <text x="95" y="98" text-anchor="middle" fill="#8b949e" font-size="9">Poisson / trace</text>
+
+  <path d="M170,85 L200,85" stroke="#ff7b72" stroke-width="1.2" marker-end="url(#arrow-r)" fill="none"/>
+
+  <rect x="200" y="60" width="150" height="50" rx="8" fill="#161b22" stroke="#ff7b72" stroke-width="1.2"/>
+  <text x="275" y="82" text-anchor="middle" fill="#ff7b72" font-size="10" font-weight="600">GlobalSchedule</text>
+  <text x="275" y="98" text-anchor="middle" fill="#8b949e" font-size="9">dispatch to replica</text>
+
+  <path d="M350,85 L380,85" stroke="#ff7b72" stroke-width="1.2" marker-end="url(#arrow-r)" fill="none"/>
+
+  <rect x="380" y="60" width="150" height="50" rx="8" fill="#161b22" stroke="#ff7b72" stroke-width="1.2"/>
+  <text x="455" y="82" text-anchor="middle" fill="#ff7b72" font-size="10" font-weight="600">ReplicaSchedule</text>
+  <text x="455" y="98" text-anchor="middle" fill="#8b949e" font-size="9">form batch</text>
+
+  <path d="M530,85 L560,85" stroke="#ff7b72" stroke-width="1.2" marker-end="url(#arrow-r)" fill="none"/>
+
+  <rect x="560" y="60" width="150" height="50" rx="8" fill="#161b22" stroke="#ff7b72" stroke-width="1.2"/>
+  <text x="635" y="82" text-anchor="middle" fill="#ff7b72" font-size="10" font-weight="600">BatchStageArrival</text>
+  <text x="635" y="98" text-anchor="middle" fill="#8b949e" font-size="9">pipeline stage</text>
+
+  <path d="M710,85 L740,85" stroke="#ff7b72" stroke-width="1.2" marker-end="url(#arrow-r)" fill="none"/>
+
+  <rect x="740" y="60" width="100" height="50" rx="8" fill="#161b22" stroke="#3fb950" stroke-width="1.2"/>
+  <text x="790" y="82" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="600">BatchEnd</text>
+  <text x="790" y="98" text-anchor="middle" fill="#8b949e" font-size="9">metrics</text>
+
+  <!-- Execution time prediction callout -->
+  <path d="M635,110 L635,150" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arrow-o)" fill="none"/>
+
+  <rect x="520" y="154" width="230" height="80" rx="8" fill="#161b22" stroke="#f0883e" stroke-width="1.2"/>
+  <text x="635" y="178" text-anchor="middle" fill="#f0883e" font-size="11" font-weight="600">ExecutionTimePredictor</text>
+  <line x1="535" y1="186" x2="735" y2="186" stroke="#30363d"/>
+  <text x="635" y="204" text-anchor="middle" fill="#8b949e" font-size="9">Backend: aicb | simai_analytical | simai_simulation</text>
+  <text x="635" y="220" text-anchor="middle" fill="#8b949e" font-size="9">Returns: prefill_time, decode_time, comm_time</text>
+
+  <!-- SimAI subprocess -->
+  <path d="M635,234 L635,264" stroke="#3fb950" stroke-width="1.2" marker-end="url(#arrow-g)" fill="none"/>
+
+  <rect x="530" y="268" width="210" height="40" rx="6" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.8"/>
+  <text x="635" y="293" text-anchor="middle" fill="#3fb950" font-size="10">SimAI Binary (subprocess)</text>
+
+  <!-- Metrics output -->
+  <rect x="40" y="160" width="200" height="90" rx="8" fill="#161b22" stroke="#30363d"/>
+  <text x="140" y="184" text-anchor="middle" fill="#e6edf3" font-size="11" font-weight="600">Output Metrics</text>
+  <text x="140" y="204" text-anchor="middle" fill="#8b949e" font-size="10">TTFT (Time to First Token)</text>
+  <text x="140" y="220" text-anchor="middle" fill="#8b949e" font-size="10">TBT (Time Between Tokens)</text>
+  <text x="140" y="236" text-anchor="middle" fill="#8b949e" font-size="10">E2E Latency &middot; Throughput</text>
+</svg>
+<p class="diagram-caption">Figure 10 &mdash; Vidur&rsquo;s event-driven inference simulation. Each batch stage queries the ExecutionTimePredictor, which can invoke SimAI as a subprocess.</p>
+</div>
+
+<h3 id="vidur-pd">Prefill/Decode Disaggregation</h3>
+
+<p>
+  Inspired by the <strong>Splitwise</strong> approach, Alibaba&rsquo;s Vidur fork supports disaggregated
+  prefill and decode pools. Prefill-heavy requests run on dedicated nodes; after prefill completes, the
+  KV cache is transferred to a decode node via point-to-point communication:
+</p>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" width="800" height="200">
+  <text x="400" y="24" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="600" letter-spacing="1">PREFILL / DECODE DISAGGREGATION</text>
+
+  <!-- Request -->
+  <rect x="20" y="70" width="100" height="60" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="1"/>
+  <text x="70" y="96" text-anchor="middle" fill="#58a6ff" font-size="10" font-weight="600">Request</text>
+  <text x="70" y="114" text-anchor="middle" fill="#8b949e" font-size="9">prompt tokens</text>
+
+  <path d="M120,100 L170,100" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none"/>
+
+  <!-- Prefill pool -->
+  <rect x="170" y="50" width="200" height="100" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="270" y="78" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">Prefill Pool</text>
+  <text x="270" y="98" text-anchor="middle" fill="#e6edf3" font-size="10">Compute-bound</text>
+  <text x="270" y="116" text-anchor="middle" fill="#8b949e" font-size="9">P replicas &middot; high FLOPS util</text>
+  <text x="270" y="134" text-anchor="middle" fill="#8b949e" font-size="9">Generates KV cache</text>
+
+  <path d="M370,100 L440,100" stroke="#f0883e" stroke-width="1.5" marker-end="url(#arrow-o)" fill="none"/>
+  <text x="405" y="92" text-anchor="middle" fill="#f0883e" font-size="9" font-weight="600">KV Transfer</text>
+  <text x="405" y="118" text-anchor="middle" fill="#8b949e" font-size="8">2 &times; L &times; H<tspan font-size="7" dy="-3">kv</tspan><tspan dy="3"> &times; D &times; S &times; dtype</tspan></text>
+
+  <!-- Decode pool -->
+  <rect x="440" y="50" width="200" height="100" rx="10" fill="#161b22" stroke="#d2a8ff" stroke-width="1.5"/>
+  <text x="540" y="78" text-anchor="middle" fill="#d2a8ff" font-size="12" font-weight="700">Decode Pool</text>
+  <text x="540" y="98" text-anchor="middle" fill="#e6edf3" font-size="10">Memory-bound</text>
+  <text x="540" y="116" text-anchor="middle" fill="#8b949e" font-size="9">D replicas &middot; high BW util</text>
+  <text x="540" y="134" text-anchor="middle" fill="#8b949e" font-size="9">Autoregressive generation</text>
+
+  <path d="M640,100 L690,100" stroke="#d2a8ff" stroke-width="1.5" marker-end="url(#arrow-p)" fill="none"/>
+
+  <!-- Output -->
+  <rect x="690" y="70" width="90" height="60" rx="8" fill="#161b22" stroke="#d2a8ff" stroke-width="1"/>
+  <text x="735" y="96" text-anchor="middle" fill="#d2a8ff" font-size="10" font-weight="600">Tokens</text>
+  <text x="735" y="114" text-anchor="middle" fill="#8b949e" font-size="9">streaming</text>
+
+  <text x="400" y="185" text-anchor="middle" fill="#8b949e" font-size="10">KV transfer BW: 48.5 GB/s (400G IB). Transfer time dominates for long sequences.</text>
+</svg>
+<p class="diagram-caption">Figure 11 &mdash; Disaggregated serving: separate compute-optimized prefill pool and memory-optimized decode pool with KV cache transfer.</p>
+</div>
+
+<h3 id="vidur-integration">SimAI Integration</h3>
+
+<p>The key integration is in <code>sklearn_execution_time_predictor.py</code>. The <code>TPTimePredictor</code>
+class generates AICB workload files (<code>SimAIWorkload</code>) and invokes the SimAI binary as a subprocess:</p>
+
+<ol>
+  <li>Vidur creates a <code>SimAIWorkload</code> with model dimensions and batch parameters</li>
+  <li>Workload is written to a temp file; a content hash caches results</li>
+  <li>SimAI binary (<code>SimAI_analytical</code> or <code>SimAI_simulator</code>) is spawned</li>
+  <li>CSV output is parsed back into execution time estimates</li>
+  <li>Results feed into Vidur&rsquo;s event-driven scheduler</li>
+</ol>
+
+<p>Supported backends: <code>aicb</code> (direct AICB call), <code>simai_analytical</code> (busbw-based),
+<code>simai_simulation</code> (full ns-3 packet simulation).</p>
+
+
+<!-- ================================================================ -->
+<!-- DATA FLOW                                                         -->
+<!-- ================================================================ -->
+<h2 id="dataflow">End-to-End Data Flow</h2>
+
+<h3>Training Simulation Flow</h3>
+
+<ol class="flow-steps">
+  <li>
+    <strong>User specifies configuration</strong><br>
+    Model parameters (hidden_size, num_layers, etc.), parallelism strategy (TP, DP, PP, EP sizes),
+    cluster topology (GPU type, network bandwidth, switch layout).
+  </li>
+  <li>
+    <strong>AICB generates workload</strong><br>
+    Extracts communication patterns from model + parallelism config. Profiles compute kernels via AIOB.
+    Outputs <code>workload.txt</code> with layer-by-layer compute times, collective types, and data sizes.
+  </li>
+  <li>
+    <strong>Astra-sim loads workload</strong><br>
+    Creates one <code>Sys</code> instance per GPU rank. <code>Workload</code> class parses the workload file,
+    creates <code>Layer</code> objects. Begins event-driven iteration: Forward &rarr; Input Gradient &rarr; Weight Gradient.
+  </li>
+  <li>
+    <strong>SimCCL decomposes collectives</strong><br>
+    When a collective operation is encountered, <code>MockNcclGroup::genFlowModels()</code> selects the
+    optimal algorithm/protocol and decomposes it into P2P <code>SingleFlow</code> objects with explicit
+    dependency DAGs. Multi-channel pipelining splits data across parallel channels.
+  </li>
+  <li>
+    <strong>Network backend processes P2P flows</strong><br>
+    <em>Analytical mode:</em> looks up bus bandwidth &rarr; instant time estimate.<br>
+    <em>Simulation mode:</em> injects packets into ns-3 &rarr; models congestion, ECMP, PFC, DCQCN.<br>
+    <em>Physical mode:</em> sends real RDMA traffic via InfiniBand verbs.
+  </li>
+  <li>
+    <strong>Results collected</strong><br>
+    Per-layer timing breakdown, total iteration time, compute vs. communication vs. exposed communication,
+    bubble fraction, CSV output for analysis.
+  </li>
+</ol>
+
+<h3>Inference Simulation Flow</h3>
+
+<ol class="flow-steps">
+  <li>
+    <strong>Vidur generates requests</strong><br>
+    <code>RequestGenerator</code> creates inference requests with Poisson or trace-driven arrival patterns.
+    Each request has a prompt length and expected generation length.
+  </li>
+  <li>
+    <strong>Global scheduler dispatches</strong><br>
+    <code>GlobalScheduler</code> (FCFS, Splitwise, etc.) assigns requests to replicas based on load.
+  </li>
+  <li>
+    <strong>Replica forms batches</strong><br>
+    <code>ReplicaScheduler</code> groups requests into batches. For disaggregated mode, prefill and decode
+    batches go to separate pools.
+  </li>
+  <li>
+    <strong>Execution time prediction</strong><br>
+    <code>ExecutionTimePredictor</code> calls SimAI (analytical or simulation) to estimate prefill time,
+    decode time, and TP communication overhead for each batch.
+  </li>
+  <li>
+    <strong>Metrics recorded</strong><br>
+    TTFT (Time to First Token), TBT (Time Between Tokens), end-to-end latency, throughput,
+    scheduling delay. Output as JSON trace, Chrome trace, CSV.
+  </li>
+</ol>
+
+
+<!-- ================================================================ -->
+<!-- CONFIGURATION                                                     -->
+<!-- ================================================================ -->
+<h2 id="config">Configuration Reference</h2>
+
+<h3>Workload File Format</h3>
+
+<pre><code># Header: parallelism policy + cluster config
+HYBRID_TRANSFORMER_FWD_IN_BCKWD model_parallel_NPU_group: 2 ep: 16 pp: 12 vpp: 8 ga: 24 all_gpus: 9216
+
+# Layer count
+1789
+
+# Per-layer format:
+# layer_name  placeholder  fwd_compute  fwd_comm_type  fwd_comm_size  bwd_compute  bwd_comm_type  bwd_comm_size  dp_compute  dp_comm_type  dp_comm_size  process_time
+transformer_layer_0  0  1200  ALLGATHER  67108864  2400  ALLREDUCE  67108864  0  REDUCESCATTER  134217728  50</code></pre>
+
+<h3>Bus Bandwidth Config (busbw.yaml)</h3>
+
+<pre><code>TP:
+  allreduce: 340.0    # GB/s — auto-selected best algorithm
+  allgather: 340.0
+  reducescatter: 340.0
+  alltoall: 370.0
+DP:
+  allreduce: 45.0     # NIC-bottlenecked
+  allgather: 45.0
+  reducescatter: 45.0
+EP:
+  alltoall: 45.0
+PP:
+  busbw: 45.0         # Point-to-point PP send/recv</code></pre>
+
+<h3>ns-3 Config (SimAI.conf)</h3>
+
+<pre><code>PACKET_PAYLOAD_SIZE 9000           # Jumbo frames
+PAUSE_TIME 2                       # PFC pause duration
+CC_MODE 1                          # 1=DCQCN, 3=HPCC, 7=Swift
+RATE_DECREASE_INTERVAL 4           # CC rate adjustment interval
+CLAMP_TARGET_RATE 1                # Clamp rate to target
+DCTCP_RATE_AI 40Mb/s               # AI rate for DCQCN
+KMAX_MAP 0:400000                  # ECN marking thresholds by speed
+BUFFER_SIZE 32                     # Per-port buffer (packets)</code></pre>
+
+
+<!-- ================================================================ -->
+<!-- DESIGN DECISIONS                                                  -->
+<!-- ================================================================ -->
+<h2 id="design">Key Design Decisions</h2>
+
+<div class="callout key">
+  <strong>1. Selective High-Fidelity Integration</strong>
+  Rather than simulating everything at the lowest level, SimAI integrates only the parts that matter for
+  accuracy. Only 572 lines from NCCL&rsquo;s codebase are essential &mdash; the algorithm selection, chunking,
+  and channel assignment logic. GPU kernel code, driver interactions, and CUDA runtime are abstracted away.
+</div>
+
+<div class="callout key">
+  <strong>2. Lock-Free Multi-Thread Acceleration</strong>
+  SimAI uses <code>std::atomic&lt;bool&gt; Sys::g_sys_inCriticalSection</code> for lock-free global context sharing
+  across threads. Each GPU rank runs in its own thread; the atomic flag serializes only critical sections.
+  This achieves a <strong>23&times; speedup</strong> over single-threaded execution.
+</div>
+
+<div class="callout key">
+  <strong>3. Three-Mode Flexibility</strong>
+  The same workload can be evaluated at three fidelity levels without modification. Analytical mode for
+  rapid exploration (seconds), simulation mode for detailed analysis (minutes to hours), physical mode
+  for ground-truth validation. Users iterate: analytical &rarr; simulation &rarr; physical.
+</div>
+
+<div class="callout key">
+  <strong>4. Modular Composition over Monolith</strong>
+  Each component (AICB, astra-sim, SimCCL, ns-3, Vidur) is a standalone project with its own repo,
+  build system, and test suite. SimAI wires them together via well-defined interfaces:
+  workload files (AICB &rarr; astra-sim), <code>AstraNetworkAPI</code> (astra-sim &rarr; ns-3),
+  subprocess calls (Vidur &rarr; SimAI binary). This enables independent evolution and replacement.
+</div>
+
+<div class="callout key">
+  <strong>5. Topology-Aware Communication</strong>
+  SimCCL&rsquo;s <code>MockNcclGroup</code> distinguishes NVLink (PATH_NVL), PCI (PATH_PIX/PXB), and network
+  (PATH_NET) paths with hardware-specific latency/bandwidth tables. Algorithm selection automatically
+  adapts to whether communication is intra-node or inter-node, matching real NCCL behavior.
+</div>
+
+<div class="callout key">
+  <strong>6. PXN (Path-to-NIC) Optimization</strong>
+  For multi-node ring collectives, SimCCL models NCCL&rsquo;s PXN optimization: intra-node data is first
+  gathered to the GPU closest to the NIC via NVLink, then sent across the network. This avoids
+  PCIe/QPI bottlenecks and is critical for accurate inter-node bandwidth modeling.
+</div>
+
+<div class="callout">
+  <strong>7. Inference via Training Simulator</strong>
+  Vidur reuses the training simulator for communication time prediction rather than building a separate
+  comm model. This ensures inference TP communication estimates match training-validated accuracy.
+  The integration is lightweight: subprocess call with cached results by content hash.
+</div>
+
+
+<!-- ================================================================ -->
+<!-- REFERENCES                                                        -->
+<!-- ================================================================ -->
+<h2 id="references">References &amp; Papers</h2>
+
+<table>
+  <tr><th>Work</th><th>Venue</th><th>Key Contribution</th></tr>
+  <tr>
+    <td><strong>SimAI</strong><br><em>Wang et al.</em></td>
+    <td>NSDI&rsquo;25</td>
+    <td>Full-stack LLM training/inference simulator with 98.1% accuracy. Unifies workload generation, framework simulation, collective decomposition, and packet-level network modeling.</td>
+  </tr>
+  <tr>
+    <td><strong>ASTRA-sim</strong><br><em>Won et al.</em></td>
+    <td>ISPASS 2020</td>
+    <td>Three-layer distributed training simulator enabling SW/HW co-design exploration. Foundation for SimAI&rsquo;s framework layer.</td>
+  </tr>
+  <tr>
+    <td><strong>ASTRA-sim 2.0</strong><br><em>Won et al.</em></td>
+    <td>ISPASS 2023</td>
+    <td>Extended with Chakra execution traces, more network backends, improved collective scheduling. SimAI uses the 1.0 branch but incorporates some 2.0 ideas.</td>
+  </tr>
+  <tr>
+    <td><strong>Vidur</strong><br><em>Agrawal et al.</em></td>
+    <td>MLSys 2024</td>
+    <td>High-fidelity LLM inference simulator with &lt;9% error. Models multi-request scheduling, batching, prefill/decode phases.</td>
+  </tr>
+  <tr>
+    <td><strong>AICB</strong><br><em>Alibaba Cloud</em></td>
+    <td>J. Systems Architecture 2025</td>
+    <td>AI communication benchmark generating training/inference workloads with precise collective patterns aligned to real frameworks.</td>
+  </tr>
+  <tr>
+    <td><strong>Splitwise</strong><br><em>Patel et al.</em></td>
+    <td>ISCA 2024</td>
+    <td>Prefill/decode disaggregation for LLM inference. Separates compute-bound prefill from memory-bound decode onto heterogeneous hardware.</td>
+  </tr>
+  <tr>
+    <td><strong>NCCL</strong><br><em>NVIDIA</em></td>
+    <td>&mdash;</td>
+    <td>NVIDIA Collective Communications Library. SimCCL extracts and reimplements NCCL&rsquo;s algorithm selection (Ring, Tree, NVLS) and protocol selection (LL, LL128, Simple) logic.</td>
+  </tr>
+  <tr>
+    <td><strong>ns-3</strong><br><em>nsnam.org</em></td>
+    <td>&mdash;</td>
+    <td>Discrete-event network simulator. SimAI&rsquo;s fork adds RDMA/RoCEv2, QP logic, DCQCN congestion control, and GPU cluster topology support.</td>
+  </tr>
+</table>
+
+<p style="margin-top: 40px; color: var(--text-dim); font-size: 12px; border-top: 1px solid var(--border); padding-top: 16px;">
+  Document generated 2026-04-14 &middot; Based on analysis of <code>aliyun/SimAI</code> repository and referenced papers.
+</p>
+
+</main>
+</body>
+</html>
