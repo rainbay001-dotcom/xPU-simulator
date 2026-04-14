@@ -186,6 +186,11 @@
   <a href="#kernels-extrap" class="sub">Extrapolation</a>
   <a href="#kernels-boundary" class="sub">Simulation Boundary</a>
   <div class="sep"></div>
+  <a href="#compute-graph">Compute Graph Extraction</a>
+  <a href="#cg-simai" class="sub">SimAI: No Graph</a>
+  <a href="#cg-vidur" class="sub">Vidur: Fixed Template</a>
+  <a href="#cg-comparison" class="sub">Comparison with Graph-Based</a>
+  <div class="sep"></div>
   <a href="#config">Configuration Reference</a>
   <a href="#design">Key Design Decisions</a>
   <a href="#references">References &amp; Papers</a>
@@ -1775,6 +1780,319 @@ total_time = model_time + cpu_overhead &times; 1e-3</code></pre>
   <strong>communication and scheduling</strong>, where collective algorithms, network congestion, and
   compute-comm overlap interact in non-obvious ways. That&rsquo;s where SimAI&rsquo;s 98.1% accuracy
   comes from: precise network simulation on top of empirical kernel timing.
+</div>
+
+
+<!-- ================================================================ -->
+<!-- COMPUTE GRAPH EXTRACTION                                          -->
+<!-- ================================================================ -->
+<h2 id="compute-graph">Compute Graph Extraction &amp; Op-Level Modeling</h2>
+
+<p>
+  A natural question: does SimAI extract a model&rsquo;s compute graph and match individual operators
+  (matmul, softmax, layernorm, etc.) to kernel runtimes? <strong>No.</strong> SimAI operates at the
+  layer level, not the operator level. This section explains the three levels of compute modeling
+  granularity and their trade-offs.
+</p>
+
+<h3 id="cg-simai">SimAI / AICB: Flat Layer List (No Graph)</h3>
+
+<p>
+  AICB generates a <strong>flat list of layers</strong>, where each layer is a single row with one
+  aggregate compute time and one collective operation:
+</p>
+
+<pre><code># Each line = one layer, ONE compute time, ONE collective
+transformer_0     1200us    ALLGATHER    64MB     2400us    ALLREDUCE    64MB
+transformer_1     1200us    ALLGATHER    64MB     2400us    ALLREDUCE    64MB
+...
+transformer_60    1200us    ALLGATHER    64MB     2400us    ALLREDUCE    64MB</code></pre>
+
+<p>
+  There is <strong>no graph of individual ops</strong> (matmul &rarr; layernorm &rarr; softmax &rarr; ...).
+  The per-layer compute time is a single number obtained by either:
+</p>
+
+<ul>
+  <li><strong>AIOB profiling:</strong> run the entire layer forward/backward on a real GPU, measure end-to-end wallclock</li>
+  <li><strong>Extrapolation:</strong> scale from a reference GPU using FLOPS/BW ratios</li>
+</ul>
+
+<div class="callout warn">
+  <strong>Limitation:</strong> Because compute is a single aggregate number per layer, SimAI cannot
+  answer questions like &ldquo;what fraction of time is spent in attention vs. MLP?&rdquo; or
+  &ldquo;what happens if I replace GELU with SiLU?&rdquo; at the training simulation level.
+  It can only vary communication parameters (topology, parallelism, collective algorithms).
+</div>
+
+<h3 id="cg-vidur">Vidur: Fixed Kernel Template (Partial Decomposition)</h3>
+
+<p>
+  Vidur&rsquo;s execution time predictor goes one level deeper than AICB. It decomposes each
+  transformer block into <strong>~13 fixed kernel components</strong>, each with its own ML model:
+</p>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400">
+  <text x="450" y="24" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="600" letter-spacing="1">VIDUR&rsquo;S FIXED KERNEL DECOMPOSITION TEMPLATE</text>
+
+  <!-- Transformer Block outline -->
+  <rect x="30" y="40" width="840" height="340" rx="12" fill="none" stroke="#30363d" stroke-width="1" stroke-dasharray="6,4"/>
+  <text x="50" y="62" fill="#8b949e" font-size="11" font-weight="600">Transformer Block (repeated &times; layers_per_stage)</text>
+
+  <!-- Attention block -->
+  <rect x="50" y="76" width="390" height="280" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.2"/>
+  <text x="245" y="100" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="700">Attention Block</text>
+
+  <rect x="70" y="112" width="160" height="32" rx="5" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="150" y="132" text-anchor="middle" fill="#e6edf3" font-size="10">input_layernorm(tokens)</text>
+
+  <rect x="70" y="152" width="160" height="32" rx="5" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="150" y="172" text-anchor="middle" fill="#e6edf3" font-size="10">attn_pre_proj(tokens)</text>
+
+  <rect x="70" y="192" width="160" height="44" rx="5" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="150" y="210" text-anchor="middle" fill="#e6edf3" font-size="10">attn_prefill(kv, chunk&sup2;)</text>
+  <text x="150" y="226" text-anchor="middle" fill="#8b949e" font-size="8">or attn_decode(bs, kv)</text>
+
+  <rect x="70" y="244" width="160" height="32" rx="5" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="150" y="264" text-anchor="middle" fill="#e6edf3" font-size="10">attn_post_proj(tokens)</text>
+
+  <rect x="70" y="284" width="160" height="32" rx="5" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="150" y="304" text-anchor="middle" fill="#e6edf3" font-size="10">kv_cache_save(tokens)</text>
+
+  <rect x="255" y="284" width="170" height="32" rx="5" fill="#3d2a0d" stroke="#f0883e" stroke-width="0.8"/>
+  <text x="340" y="304" text-anchor="middle" fill="#f0883e" font-size="10">AllReduce(h&times;tok&times;2)</text>
+
+  <!-- Arrow between blocks -->
+  <text x="245" y="340" text-anchor="middle" fill="#58a6ff" font-size="9">feature: num_tokens_rounded</text>
+  <text x="340" y="340" text-anchor="end" fill="#f0883e" font-size="9">&larr; TP comm</text>
+
+  <!-- MLP block -->
+  <rect x="460" y="76" width="390" height="280" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="1.2"/>
+  <text x="655" y="100" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="700">MLP Block</text>
+
+  <rect x="480" y="112" width="160" height="32" rx="5" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.6"/>
+  <text x="560" y="132" text-anchor="middle" fill="#e6edf3" font-size="10">post_attn_norm(tokens)</text>
+
+  <rect x="480" y="152" width="160" height="32" rx="5" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.6"/>
+  <text x="560" y="172" text-anchor="middle" fill="#e6edf3" font-size="10">mlp_up_proj(tokens)</text>
+
+  <rect x="480" y="192" width="160" height="32" rx="5" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.6"/>
+  <text x="560" y="212" text-anchor="middle" fill="#e6edf3" font-size="10">mlp_act(tokens)</text>
+
+  <rect x="480" y="232" width="160" height="32" rx="5" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.6"/>
+  <text x="560" y="252" text-anchor="middle" fill="#e6edf3" font-size="10">mlp_down_proj(tokens)</text>
+
+  <rect x="480" y="280" width="160" height="32" rx="5" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.6"/>
+  <text x="560" y="300" text-anchor="middle" fill="#e6edf3" font-size="10">residual_add(tokens)</text>
+
+  <rect x="665" y="280" width="170" height="32" rx="5" fill="#3d2a0d" stroke="#f0883e" stroke-width="0.8"/>
+  <text x="750" y="300" text-anchor="middle" fill="#f0883e" font-size="10">AllReduce(h&times;tok&times;2)</text>
+
+  <text x="655" y="340" text-anchor="middle" fill="#3fb950" font-size="9">feature: num_tokens_rounded</text>
+  <text x="750" y="340" text-anchor="end" fill="#f0883e" font-size="9">&larr; TP comm</text>
+</svg>
+<p class="diagram-caption">Figure 16 &mdash; Vidur&rsquo;s fixed decomposition template: each transformer block is broken into ~13 kernel components with separate ML models. This template is hardcoded, not extracted from a model graph.</p>
+</div>
+
+<p>
+  This is <strong>not a compute graph extracted from the model</strong>. It is a fixed template that
+  assumes every transformer block has the same structure: pre-norm &rarr; QKV projection &rarr; attention &rarr;
+  output projection &rarr; post-norm &rarr; MLP up &rarr; activation &rarr; MLP down &rarr; residual add &rarr; 2&times; AllReduce.
+</p>
+
+<p>Key limitations of this approach:</p>
+<ul>
+  <li>Cannot represent non-standard architectures (e.g., multi-head latent attention in DeepSeek-V2,
+      parallel attention+MLP in GPT-J, cross-attention in encoder-decoder models)</li>
+  <li>MoE layers use an entirely separate code path (AICB CSV) rather than fitting the template</li>
+  <li>No operator fusion awareness &mdash; if the runtime fuses layernorm+QKV or attention+output_proj,
+      the template still sums them separately</li>
+  <li>Adding a new kernel type (e.g., sparse attention) requires modifying the template code, not just config</li>
+</ul>
+
+<h3 id="cg-comparison">Comparison: Flat Layer vs. Fixed Template vs. Graph-Based</h3>
+
+<div class="diagram">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 360" width="920" height="360">
+  <text x="460" y="24" text-anchor="middle" fill="#8b949e" font-size="12" font-weight="600" letter-spacing="1">THREE LEVELS OF COMPUTE MODELING GRANULARITY</text>
+
+  <!-- Level 1: SimAI/AICB -->
+  <rect x="20" y="50" width="280" height="280" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="160" y="78" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="700">SimAI / AICB</text>
+  <text x="160" y="96" text-anchor="middle" fill="#58a6ff" font-size="10">Flat Layer List</text>
+  <line x1="35" y1="104" x2="285" y2="104" stroke="#30363d"/>
+
+  <rect x="40" y="116" width="240" height="30" rx="5" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="160" y="136" text-anchor="middle" fill="#e6edf3" font-size="10">Layer 0: compute=1200&mu;s, AR 64MB</text>
+  <rect x="40" y="154" width="240" height="30" rx="5" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="160" y="174" text-anchor="middle" fill="#e6edf3" font-size="10">Layer 1: compute=1200&mu;s, AR 64MB</text>
+  <rect x="40" y="192" width="240" height="30" rx="5" fill="#1a3a5c" stroke="#58a6ff" stroke-width="0.6"/>
+  <text x="160" y="212" text-anchor="middle" fill="#8b949e" font-size="10">...</text>
+
+  <text x="160" y="248" text-anchor="middle" fill="#8b949e" font-size="10">One number per layer</text>
+  <text x="160" y="266" text-anchor="middle" fill="#8b949e" font-size="10">No per-op breakdown</text>
+  <text x="160" y="284" text-anchor="middle" fill="#8b949e" font-size="10">Requires real GPU profiling</text>
+
+  <rect x="55" y="298" width="210" height="22" rx="4" fill="rgba(88,166,255,.12)"/>
+  <text x="160" y="314" text-anchor="middle" fill="#58a6ff" font-size="10">Best for: network exploration</text>
+
+  <!-- Level 2: Vidur -->
+  <rect x="320" y="50" width="280" height="280" rx="10" fill="#161b22" stroke="#d2a8ff" stroke-width="1.5"/>
+  <text x="460" y="78" text-anchor="middle" fill="#d2a8ff" font-size="13" font-weight="700">Vidur</text>
+  <text x="460" y="96" text-anchor="middle" fill="#d2a8ff" font-size="10">Fixed Kernel Template</text>
+  <line x1="335" y1="104" x2="585" y2="104" stroke="#30363d"/>
+
+  <rect x="340" y="116" width="100" height="24" rx="4" fill="#2a1a4a" stroke="#d2a8ff" stroke-width="0.5"/>
+  <text x="390" y="132" text-anchor="middle" fill="#e6edf3" font-size="9">qkv_proj</text>
+  <rect x="448" y="116" width="70" height="24" rx="4" fill="#2a1a4a" stroke="#d2a8ff" stroke-width="0.5"/>
+  <text x="483" y="132" text-anchor="middle" fill="#e6edf3" font-size="9">attn</text>
+  <rect x="526" y="116" width="60" height="24" rx="4" fill="#2a1a4a" stroke="#d2a8ff" stroke-width="0.5"/>
+  <text x="556" y="132" text-anchor="middle" fill="#e6edf3" font-size="9">o_proj</text>
+
+  <rect x="340" y="148" width="70" height="24" rx="4" fill="#2a1a4a" stroke="#d2a8ff" stroke-width="0.5"/>
+  <text x="375" y="164" text-anchor="middle" fill="#e6edf3" font-size="9">mlp_up</text>
+  <rect x="418" y="148" width="60" height="24" rx="4" fill="#2a1a4a" stroke="#d2a8ff" stroke-width="0.5"/>
+  <text x="448" y="164" text-anchor="middle" fill="#e6edf3" font-size="9">act</text>
+  <rect x="486" y="148" width="100" height="24" rx="4" fill="#2a1a4a" stroke="#d2a8ff" stroke-width="0.5"/>
+  <text x="536" y="164" text-anchor="middle" fill="#e6edf3" font-size="9">mlp_down</text>
+
+  <rect x="340" y="180" width="80" height="24" rx="4" fill="#3d2a0d" stroke="#f0883e" stroke-width="0.5"/>
+  <text x="380" y="196" text-anchor="middle" fill="#f0883e" font-size="9">AR &times;2</text>
+  <rect x="428" y="180" width="60" height="24" rx="4" fill="#2a1a4a" stroke="#d2a8ff" stroke-width="0.5"/>
+  <text x="458" y="196" text-anchor="middle" fill="#e6edf3" font-size="9">norm</text>
+  <rect x="496" y="180" width="90" height="24" rx="4" fill="#2a1a4a" stroke="#d2a8ff" stroke-width="0.5"/>
+  <text x="541" y="196" text-anchor="middle" fill="#e6edf3" font-size="9">residual</text>
+
+  <text x="460" y="230" text-anchor="middle" fill="#8b949e" font-size="10">~13 kernel types per block</text>
+  <text x="460" y="248" text-anchor="middle" fill="#8b949e" font-size="10">Hardcoded template</text>
+  <text x="460" y="266" text-anchor="middle" fill="#8b949e" font-size="10">sklearn RF per kernel type</text>
+  <text x="460" y="284" text-anchor="middle" fill="#8b949e" font-size="10">Requires profiling CSVs</text>
+
+  <rect x="355" y="298" width="210" height="22" rx="4" fill="rgba(210,168,255,.12)"/>
+  <text x="460" y="314" text-anchor="middle" fill="#d2a8ff" font-size="10">Best for: inference scheduling</text>
+
+  <!-- Level 3: Graph-based -->
+  <rect x="620" y="50" width="280" height="280" rx="10" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="760" y="78" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="700">Graph-Based</text>
+  <text x="760" y="96" text-anchor="middle" fill="#3fb950" font-size="10">Full Compute DAG</text>
+  <line x1="635" y1="104" x2="885" y2="104" stroke="#30363d"/>
+
+  <!-- Mini DAG -->
+  <circle cx="680" cy="126" r="10" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.8"/>
+  <text x="680" y="130" text-anchor="middle" fill="#e6edf3" font-size="7">emb</text>
+  <circle cx="720" cy="150" r="10" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.8"/>
+  <text x="720" y="154" text-anchor="middle" fill="#e6edf3" font-size="7">norm</text>
+  <circle cx="680" cy="174" r="10" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.8"/>
+  <text x="680" y="178" text-anchor="middle" fill="#e6edf3" font-size="7">qkv</text>
+  <circle cx="760" cy="174" r="10" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.8"/>
+  <text x="760" y="178" text-anchor="middle" fill="#e6edf3" font-size="7">rope</text>
+  <circle cx="720" cy="198" r="10" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.8"/>
+  <text x="720" y="202" text-anchor="middle" fill="#e6edf3" font-size="7">sdpa</text>
+  <circle cx="800" cy="150" r="10" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.8"/>
+  <text x="800" y="154" text-anchor="middle" fill="#e6edf3" font-size="7">silu</text>
+  <circle cx="840" cy="174" r="10" fill="#1a3d2a" stroke="#3fb950" stroke-width="0.8"/>
+  <text x="840" y="178" text-anchor="middle" fill="#e6edf3" font-size="7">mm</text>
+  <circle cx="800" cy="198" r="10" fill="#3d2a0d" stroke="#f0883e" stroke-width="0.8"/>
+  <text x="800" y="202" text-anchor="middle" fill="#f0883e" font-size="7">AR</text>
+
+  <!-- edges -->
+  <line x1="688" y1="133" x2="713" y2="143" stroke="#3fb950" stroke-width="0.5" opacity="0.5"/>
+  <line x1="720" y1="160" x2="688" y2="167" stroke="#3fb950" stroke-width="0.5" opacity="0.5"/>
+  <line x1="720" y1="160" x2="752" y2="167" stroke="#3fb950" stroke-width="0.5" opacity="0.5"/>
+  <line x1="688" y1="181" x2="713" y2="191" stroke="#3fb950" stroke-width="0.5" opacity="0.5"/>
+  <line x1="760" y1="181" x2="727" y2="191" stroke="#3fb950" stroke-width="0.5" opacity="0.5"/>
+  <line x1="800" y1="157" x2="833" y2="167" stroke="#3fb950" stroke-width="0.5" opacity="0.5"/>
+  <line x1="840" y1="181" x2="807" y2="191" stroke="#3fb950" stroke-width="0.5" opacity="0.5"/>
+
+  <text x="760" y="230" text-anchor="middle" fill="#8b949e" font-size="10">Every op is a graph node</text>
+  <text x="760" y="248" text-anchor="middle" fill="#8b949e" font-size="10">Extracted from model config</text>
+  <text x="760" y="266" text-anchor="middle" fill="#8b949e" font-size="10">Roofline model per op</text>
+  <text x="760" y="284" text-anchor="middle" fill="#8b949e" font-size="10">No profiling required</text>
+
+  <rect x="655" y="298" width="210" height="22" rx="4" fill="rgba(63,185,80,.12)"/>
+  <text x="760" y="314" text-anchor="middle" fill="#3fb950" font-size="10">Best for: HW design exploration</text>
+</svg>
+<p class="diagram-caption">Figure 17 &mdash; Three levels of compute modeling granularity: SimAI uses flat layer timing, Vidur uses a fixed kernel template, graph-based approaches extract the full compute DAG.</p>
+</div>
+
+<table>
+  <tr><th>Aspect</th><th>SimAI / AICB</th><th>Vidur (Inference)</th><th>Graph-Based Approach</th></tr>
+  <tr>
+    <td><strong>Model representation</strong></td>
+    <td>Flat layer list with aggregate timing</td>
+    <td>~13 fixed kernel types per block</td>
+    <td>Compute DAG of individual operators</td>
+  </tr>
+  <tr>
+    <td><strong>Per-op resolution</strong></td>
+    <td><span class="chip chip-red">Layer-level</span></td>
+    <td><span class="chip chip-orange">Kernel-level (fixed)</span></td>
+    <td><span class="chip chip-green">Every op</span> (matmul, softmax, norm, ...)</td>
+  </tr>
+  <tr>
+    <td><strong>Graph extraction</strong></td>
+    <td>None</td>
+    <td>Hardcoded template</td>
+    <td>From model config, trace, or ONNX</td>
+  </tr>
+  <tr>
+    <td><strong>Kernel timing source</strong></td>
+    <td>Profiled on real GPU (AIOB)</td>
+    <td>Profiled + sklearn RF curve fit</td>
+    <td>Analytical (roofline) or profiling DB</td>
+  </tr>
+  <tr>
+    <td><strong>Needs real GPU?</strong></td>
+    <td><span class="chip chip-red">Yes</span> (for profiling)</td>
+    <td><span class="chip chip-red">Yes</span> (for profiling CSVs)</td>
+    <td><span class="chip chip-green">No</span> (roofline is analytical)</td>
+  </tr>
+  <tr>
+    <td><strong>New architecture support</strong></td>
+    <td>New profiling run</td>
+    <td>New profiling run + maybe code change</td>
+    <td>New config.json handler (no profiling)</td>
+  </tr>
+  <tr>
+    <td><strong>Op fusion awareness</strong></td>
+    <td>Implicit in profiling</td>
+    <td>No (sums unfused kernels)</td>
+    <td>Explicit fusion passes on the graph</td>
+  </tr>
+  <tr>
+    <td><strong>What-if analysis</strong></td>
+    <td>Network/parallelism only</td>
+    <td>+ batch size / seq len</td>
+    <td>+ hardware specs, op changes, fusion</td>
+  </tr>
+  <tr>
+    <td><strong>Accuracy</strong></td>
+    <td><span class="chip chip-green">98.1%</span> (empirical)</td>
+    <td><span class="chip chip-green">&lt;9% error</span> (empirical)</td>
+    <td>Depends on roofline calibration</td>
+  </tr>
+  <tr>
+    <td><strong>Best suited for</strong></td>
+    <td>Network topology &amp; parallelism exploration</td>
+    <td>Inference scheduling &amp; capacity planning</td>
+    <td>Hardware design space &amp; op-level optimization</td>
+  </tr>
+</table>
+
+<div class="callout key">
+  <strong>Trade-off:</strong> SimAI&rsquo;s flat-layer approach achieves the highest accuracy (98.1%) because
+  it uses real measured kernel times. But it requires access to the target GPU for profiling and cannot
+  explore &ldquo;what if this GPU had 2&times; more FLOPS?&rdquo; scenarios. Graph-based approaches sacrifice
+  some accuracy for the ability to analytically model any hardware without profiling &mdash; essential for
+  pre-silicon hardware design exploration and cross-architecture comparison.
+</div>
+
+<div class="callout">
+  <strong>Complementary strengths:</strong> These approaches are not mutually exclusive. A practical workflow
+  combines them: use a graph-based simulator for initial hardware design space exploration (no GPU required),
+  then switch to SimAI with profiling for production-accurate network/parallelism tuning once the hardware
+  exists. The graph-based approach explores the compute dimension; SimAI explores the communication dimension.
 </div>
 
 
