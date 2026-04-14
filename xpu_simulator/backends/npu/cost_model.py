@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from ...core.cost_model import CostModel, OpCost
+from ...core.cost_model import CostModel, OpCost, compute_size_efficiency
 from ...core.operator import OpSpec, OpType
 from .hardware import AscendSpec
 
@@ -214,9 +214,19 @@ class NPUCostModel(CostModel):
         # Tile alignment utilization (captures padding waste)
         utilization = self._cube_utilization(op, tile)
 
+        # Core occupancy: when output tiles don't fill all AI cores evenly,
+        # the last 'wave' of tiles leaves some cores idle (same principle as
+        # GPU wave quantization).
+        core_occ = self._core_occupancy(op)
+
+        # Size-dependent efficiency: small problems don't amortize fixed
+        # per-core costs (UB staging, pipeline fill, scalar setup).
+        size_eff = compute_size_efficiency(flops, self.hw.ai_core_count)
+
         # --- Compute bound: per-core tiled CUBE model ---
         cube_efficiency = self.hw.get_efficiency(f"cube_{dtype_str}")
-        chip_cube_peak = self.hw.cube_peak_for(dtype_str) * utilization * cube_efficiency
+        chip_cube_peak = (self.hw.cube_peak_for(dtype_str)
+                          * utilization * cube_efficiency * core_occ * size_eff)
         compute_us = (flops / chip_cube_peak * 1e6) if chip_cube_peak > 0 else 0.0
 
         # --- Memory bound: chip-level aggregate bandwidth ---
@@ -614,6 +624,39 @@ class NPUCostModel(CostModel):
             return actual / padded if padded > 0 else 1.0
 
         return 1.0
+
+    def _core_occupancy(self, op: OpSpec) -> float:
+        """Core occupancy efficiency for CUBE ops.
+
+        Analogous to GPU wave quantization: when total output tiles don't
+        fill all AI cores evenly, the last 'wave' wastes core slots.
+
+        Returns num_tiles / (num_waves * num_cores), in (0, 1.0].
+        """
+        tile = self.hw.cube_tile_size
+        if op.op_type == OpType.MATMUL and len(op.inputs) >= 2:
+            a, b = op.inputs[0], op.inputs[1]
+            M = a.shape[-2] if len(a.shape) >= 2 else 1
+            N = b.shape[-1] if len(b.shape) >= 2 else 1
+            batch = math.prod(a.shape[:-2]) if len(a.shape) > 2 else 1
+            M *= batch
+        elif op.op_type == OpType.CONV2D and len(op.outputs) >= 1:
+            out = op.outputs[0]
+            N_batch = out.shape[0] if len(out.shape) > 0 else 1
+            H = out.shape[2] if len(out.shape) > 2 else 1
+            W = out.shape[3] if len(out.shape) > 3 else 1
+            M = N_batch * H * W
+            N = out.shape[1] if len(out.shape) > 1 else 1
+        else:
+            return 1.0
+
+        if M <= 0 or N <= 0:
+            return 1.0
+
+        num_tiles = math.ceil(M / tile) * math.ceil(N / tile)
+        num_cores = self.hw.ai_core_count
+        num_waves = math.ceil(num_tiles / num_cores)
+        return num_tiles / (num_waves * num_cores)
 
     def _format_conversion_cost(self, op: OpSpec, dtype: str) -> float:
         """Estimate cost of data format conversion (e.g., ND -> Fractal_NZ).

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 
-from ...core.cost_model import CostModel, OpCost
+from ...core.cost_model import CostModel, OpCost, compute_size_efficiency
 from ...core.operator import OpSpec, OpType
 from .hardware import GPUSpec
 
@@ -39,8 +39,12 @@ class GPUCostModel(CostModel):
         # Wave quantization for MATMUL: partial last wave wastes SM slots
         wave_eff = self._wave_efficiency(op) if is_tc_op else 1.0
 
-        # Apply compute efficiency and wave quantization
-        effective_peak = peak * compute_efficiency * wave_eff
+        # Size-dependent efficiency: small problems don't amortize fixed
+        # per-SM costs (register setup, shared-memory staging, etc.)
+        size_eff = compute_size_efficiency(flops, self.hw.sm_count)
+
+        # Apply compute efficiency, wave quantization, and size scaling
+        effective_peak = peak * compute_efficiency * wave_eff * size_eff
 
         # Memory-hierarchy-aware bandwidth
         bw_GBs = self.hw.effective_bandwidth(mem_bytes)

@@ -154,7 +154,7 @@ def test_efficiency_default_is_one():
 
 
 def test_gpu_matmul_efficiency_affects_compute_us():
-    """Compute_us with efficiency and wave quantization applied."""
+    """Compute_us with efficiency, wave quantization, and size scaling applied."""
     op = _matmul_op(M=4096, K=4096, N=4096)
     cost = GPUCostModel(A100_80GB).estimate(op)
     flops = op.flops
@@ -162,11 +162,13 @@ def test_gpu_matmul_efficiency_affects_compute_us():
     # For 4096x4096: ceil(4096/128)*ceil(4096/128) = 32*32 = 1024 tiles on 108 SMs
     # num_waves = ceil(1024/108) = 10, wave_eff = 1024/(10*108) = 0.948
     import math
+    from xpu_simulator.core.cost_model import compute_size_efficiency
     tile_M, tile_N = A100_80GB.cta_tile
     num_tiles = math.ceil(4096 / tile_M) * math.ceil(4096 / tile_N)
     num_waves = math.ceil(num_tiles / A100_80GB.sm_count)
     wave_eff = num_tiles / (num_waves * A100_80GB.sm_count)
-    effective_compute_us = flops / (raw_peak * 0.70 * wave_eff) * 1e6
+    size_eff = compute_size_efficiency(flops, A100_80GB.sm_count)
+    effective_compute_us = flops / (raw_peak * 0.70 * wave_eff * size_eff) * 1e6
     assert abs(cost.compute_us - effective_compute_us) / effective_compute_us < 0.01
 
 
@@ -218,3 +220,107 @@ def test_h100_wave_quantization_different_from_a100():
     # A100: ceil(256/108)=3 waves, eff=256/324=0.790
     # H100: ceil(256/132)=2 waves, eff=256/264=0.970
     assert h100_eff > a100_eff  # H100 has better wave utilization here
+
+
+# --- Size-dependent efficiency tests ---
+
+def test_size_efficiency_large_unaffected():
+    """Large matmuls (> 1 GFLOPS/processor) should have near-1.0 size scaling."""
+    from xpu_simulator.core.cost_model import compute_size_efficiency
+    # 4096^3 on A100: 137.4 GFLOPS / 108 SMs = 1.27 GFLOPS/SM
+    eff = compute_size_efficiency(2 * 4096**3, 108)
+    assert eff > 0.999, f"Large matmul size_eff={eff}, expected ~1.0"
+    # Same on NPU 910B: 137.4 GFLOPS / 30 cores
+    eff_npu = compute_size_efficiency(2 * 4096**3, 30)
+    assert eff_npu > 0.999
+
+
+def test_size_efficiency_small_penalized():
+    """Tiny matmuls should get meaningful efficiency penalty."""
+    from xpu_simulator.core.cost_model import compute_size_efficiency
+    # 64^3 matmul = 524K FLOPS. On 108 SMs: 4.9K FLOPS/SM — deeply sub-saturated
+    eff = compute_size_efficiency(2 * 64**3, 108)
+    assert eff < 0.85, f"Tiny matmul size_eff={eff}, expected < 0.85"
+    assert eff > 0.60, f"Tiny matmul size_eff={eff}, should not be below floor"
+
+
+def test_size_efficiency_monotonic():
+    """Larger FLOP counts should give higher efficiency."""
+    from xpu_simulator.core.cost_model import compute_size_efficiency
+    sizes = [2 * n**3 for n in [32, 128, 512, 2048, 8192]]
+    effs = [compute_size_efficiency(s, 108) for s in sizes]
+    for i in range(1, len(effs)):
+        assert effs[i] >= effs[i - 1], (
+            f"Size efficiency not monotonic: {effs[i-1]:.4f} > {effs[i]:.4f}"
+        )
+
+
+def test_gpu_small_matmul_worse_per_flop():
+    """Small matmul should have worse per-FLOP compute cost due to size efficiency."""
+    model = GPUCostModel(A100_80GB)
+    # Both have many tiles (good wave eff) but differ in total FLOPS
+    big = _matmul_op(M=4096, K=4096, N=4096)    # 137.4 GFLOPS
+    med = _matmul_op(M=256, K=256, N=256)        # 33.6 MFLOPS
+    big_cost = model.estimate(big)
+    med_cost = model.estimate(med)
+    # Per-FLOP cost should be higher for the smaller matmul
+    big_us_per_flop = big_cost.compute_us / big.flops
+    med_us_per_flop = med_cost.compute_us / med.flops
+    assert med_us_per_flop > big_us_per_flop
+
+
+# --- NPU core occupancy tests ---
+
+def test_npu_core_occupancy_single_tile():
+    """16x16 matmul produces 1 tile → only 1/30 cores used on 910B."""
+    model = NPUCostModel(ASCEND_910B)
+    op = _matmul_op(M=16, K=16, N=16)
+    occ = model._core_occupancy(op)
+    # 1 tile on 30 cores: ceil(1/30)=1 wave, occ = 1/30
+    expected = 1.0 / 30.0
+    assert abs(occ - expected) < 1e-6, f"Got {occ}, expected {expected}"
+
+
+def test_npu_core_occupancy_perfect_fill():
+    """Exactly 30 tiles should give perfect occupancy on 910B (30 cores)."""
+    model = NPUCostModel(ASCEND_910B)
+    # 5 tiles in M × 6 tiles in N = 30 tiles → 1 wave, occ = 1.0
+    op = _matmul_op(M=80, K=64, N=96)  # ceil(80/16)*ceil(96/16) = 5*6 = 30
+    occ = model._core_occupancy(op)
+    assert abs(occ - 1.0) < 1e-6, f"Got {occ}, expected 1.0"
+
+
+def test_npu_core_occupancy_partial_wave():
+    """31 tiles on 30 cores → 2 waves, occ = 31/60 ≈ 0.517."""
+    model = NPUCostModel(ASCEND_910B)
+    # Need 31 output tiles: e.g. 31 M-tiles × 1 N-tile → M=31*16=496, N=16
+    op = _matmul_op(M=496, K=64, N=16)
+    occ = model._core_occupancy(op)
+    expected = 31.0 / 60.0  # 2 waves
+    assert abs(occ - expected) < 1e-6, f"Got {occ}, expected {expected}"
+
+
+def test_npu_core_occupancy_large_unaffected():
+    """Large matmul (16384 tiles) should have occupancy ≈ 1.0."""
+    model = NPUCostModel(ASCEND_910B)
+    op = _matmul_op(M=2048, K=2048, N=2048)
+    occ = model._core_occupancy(op)
+    # (2048/16)^2 = 128*128 = 16384 tiles, ceil(16384/30) = 547 waves
+    # occ = 16384 / (547*30) = 16384/16410 ≈ 0.998
+    assert occ > 0.99, f"Large matmul core_occ={occ}, expected ≈ 1.0"
+
+
+def test_npu_tiny_matmul_much_slower_per_flop():
+    """Tiny matmul on NPU should have dramatically worse per-FLOP cost."""
+    model = NPUCostModel(ASCEND_910B)
+    tiny = _matmul_op(M=16, K=16, N=16)    # 1 tile, 8K FLOPS
+    large = _matmul_op(M=2048, K=2048, N=2048)  # 16K tiles, 17.2G FLOPS
+    tiny_cost = model.estimate(tiny)
+    large_cost = model.estimate(large)
+    # Per-FLOP compute cost should be much worse for the tiny case
+    tiny_per_flop = tiny_cost.compute_us / tiny.flops if tiny.flops > 0 else float("inf")
+    large_per_flop = large_cost.compute_us / large.flops if large.flops > 0 else float("inf")
+    assert tiny_per_flop > large_per_flop * 5, (
+        f"Tiny per-FLOP ({tiny_per_flop:.2e}) should be >5x worse than "
+        f"large ({large_per_flop:.2e})"
+    )

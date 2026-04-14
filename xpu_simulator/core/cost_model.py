@@ -1,6 +1,7 @@
 """Cost model abstractions and roofline implementation."""
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
@@ -12,6 +13,26 @@ from .parallel import InterconnectSpec, HierarchicalInterconnect, ParallelConfig
 if TYPE_CHECKING:
     from .profiling_db import ProfilingDB
     from .communication import NCCLProfile
+
+
+def compute_size_efficiency(flops: float, processor_count: int,
+                            max_penalty: float = 0.3,
+                            saturation_gflops_per_proc: float = 0.1) -> float:
+    """Scale compute efficiency by problem size.
+
+    Small problems don't amortize fixed per-processor costs (register setup,
+    cache warming, instruction scheduling), achieving lower effective
+    throughput.  Returns a factor in [(1 - max_penalty), 1.0] that should
+    multiply the base efficiency.
+
+    At *saturation_gflops_per_proc* GFLOPS per processor the factor reaches
+    ~82% of 1.0.  At 3x that threshold it reaches ~97%.  Typical LLM matmuls
+    (> 1 GFLOPS/processor) are essentially unaffected (< 0.5% penalty).
+    """
+    if flops <= 0 or processor_count <= 0:
+        return 1.0
+    gflops_pp = flops / (processor_count * 1e9)
+    return 1.0 - max_penalty * math.exp(-gflops_pp / saturation_gflops_per_proc)
 
 
 @dataclass
