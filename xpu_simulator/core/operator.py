@@ -181,3 +181,41 @@ class OpSpec:
     def _reduction_flops(self) -> int:
         # ~5 ops per element for layernorm/softmax (mean, var, sub, div, etc.)
         return 5 * self.inputs[0].numel
+
+
+# ------------------------------------------------------------------ #
+# Multi-modal input specification
+# ------------------------------------------------------------------ #
+
+@dataclass
+class ImageInput:
+    """Describes a single image in a multi-modal request."""
+    width: int = 0      # 0 = use model default resolution
+    height: int = 0
+    num_tiles: int = 1   # Pre-computed tile count (for anyres/dynamic_tile)
+
+
+@dataclass
+class VideoInput:
+    """Describes a video clip in a multi-modal request."""
+    num_frames: int = 1
+    width: int = 0
+    height: int = 0
+    temporal_patch_size: int = 1  # Temporal compression factor
+
+
+@dataclass
+class AudioInput:
+    """Describes an audio segment in a multi-modal request."""
+    duration_seconds: float = 0.0
+    sample_rate: int = 16000
+    encoder_output_tokens: int = 0  # Pre-computed token count
+
+
+@dataclass
+class MultiModalInput:
+    """Describes the multi-modal content of a single request."""
+    num_text_tokens: int = 0
+    images: list[ImageInput] = field(default_factory=list)
+    video_clips: list[VideoInput] = field(default_factory=list)
+    audio_segments: list[AudioInput] = field(default_factory=list)

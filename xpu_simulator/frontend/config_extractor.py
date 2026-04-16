@@ -2,16 +2,17 @@
 from __future__ import annotations
 
 import json
+import math
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import ClassVar, Optional, Union
 
 from ..core.graph import ComputeGraph, Node
-from ..core.operator import OpType, Dtype, Phase
+from ..core.operator import OpType, Dtype, Phase, MultiModalInput, ImageInput
 from ..core.parallel import ParallelConfig
 from .base import GraphExtractor
 from .graph_builder import GraphBuilder
-from .config_normalizer import ModelConfig, normalize_config
+from .config_normalizer import ModelConfig, VisionConfig, normalize_config
 
 
 # ------------------------------------------------------------------ #
@@ -183,6 +184,137 @@ class DeepSeekHandler(ArchitectureHandler):
 
 
 # ------------------------------------------------------------------ #
+# VLM handlers (multi-modal)
+# ------------------------------------------------------------------ #
+
+class VLMHandler(ArchitectureHandler):
+    """Base handler for vision-language models.
+
+    Wraps an existing LLM handler and prepends vision encoder + projector.
+    Subclasses can override resolution/tiling logic.
+    """
+
+    def __init__(self, llm_handler: ArchitectureHandler):
+        self.llm_handler = llm_handler
+
+    def build_layer(self, builder: GraphBuilder, cfg: ModelConfig,
+                    layer_id: int, tokens: int, B: int, S: int,
+                    prev: Node) -> Node:
+        """Delegate LLM layer building to the wrapped handler."""
+        return self.llm_handler.build_layer(builder, cfg, layer_id,
+                                            tokens, B, S, prev)
+
+    def build_vision_stage(self, builder: GraphBuilder, cfg: ModelConfig,
+                           mm_input: MultiModalInput,
+                           B: int) -> tuple[Node, int]:
+        """Build vision encoder + projector. Returns (last_node, num_vision_tokens)."""
+        vcfg = cfg.vision_config
+        total_vision_tokens = 0
+        last_node = None
+
+        for i, img in enumerate(mm_input.images):
+            num_patches = self._compute_patches(vcfg, img)
+
+            enc_node = builder.vision_encoder(
+                f"vision.img{i}", vcfg, num_patches, B, last_node)
+
+            # Token count after compression
+            if vcfg.projector_type == "pixel_shuffle_mlp":
+                s = vcfg.spatial_merge_size
+                proj_tokens = num_patches // max(s * s, 1)
+            elif vcfg.projector_type in ("qformer", "perceiver"):
+                proj_tokens = vcfg.num_query_tokens
+            else:
+                proj_tokens = num_patches
+
+            last_node = builder.vision_projector(
+                f"vision.img{i}", vcfg, proj_tokens,
+                cfg.hidden_size, B, enc_node)
+
+            total_vision_tokens += proj_tokens
+
+        return last_node, total_vision_tokens
+
+    def _compute_patches(self, vcfg: VisionConfig, img: ImageInput) -> int:
+        """Compute raw patch count for one image."""
+        if vcfg.resolution_strategy == "native" and img.width > 0:
+            p = vcfg.patch_size
+            return math.ceil(img.width / p) * math.ceil(img.height / p)
+
+        tile = vcfg.tile_size or vcfg.image_size
+        patches_per_tile = (tile // vcfg.patch_size) ** 2
+        n_tiles = img.num_tiles or 1
+        if vcfg.use_thumbnail:
+            n_tiles += 1
+        return n_tiles * patches_per_tile
+
+
+class LLaVAHandler(VLMHandler):
+    """LLaVA-1.5, LLaVA-NeXT: CLIP/SigLIP encoder + MLP projector + LLM."""
+    def __init__(self):
+        super().__init__(StandardTransformerHandler())
+
+
+class InternVLHandler(VLMHandler):
+    """InternVL2/2.5: InternViT + pixel-shuffle MLP + LLM."""
+    def __init__(self):
+        super().__init__(StandardTransformerHandler())
+
+
+class DeepSeekVLHandler(VLMHandler):
+    """DeepSeek-VL2: SigLIP + MLP + DeepSeek MoE LLM."""
+    def __init__(self):
+        super().__init__(DeepSeekHandler())
+
+
+class Qwen2VLHandler(VLMHandler):
+    """Qwen2-VL / Qwen2.5-VL: Custom ViT + spatial-merge MLP + Qwen2 LLM."""
+    def __init__(self):
+        super().__init__(StandardTransformerHandler())
+
+
+class Gemma3VLHandler(VLMHandler):
+    """Gemma3: SigLIP + linear proj + Gemma LLM."""
+    def __init__(self):
+        super().__init__(StandardTransformerHandler())
+
+
+class PixtralHandler(VLMHandler):
+    """Pixtral: Custom ViT (2D-RoPE) + MLP + Mistral LLM."""
+    def __init__(self):
+        super().__init__(StandardTransformerHandler())
+
+
+class CrossAttnVLMHandler(VLMHandler):
+    """Cross-attention VLMs (Llama 3.2-Vision, Flamingo).
+
+    Vision tokens not concatenated; cross-attention injected at specific layers.
+    """
+    def __init__(self):
+        super().__init__(StandardTransformerHandler())
+
+    def build_layer(self, builder: GraphBuilder, cfg: ModelConfig,
+                    layer_id: int, tokens: int, B: int, S: int,
+                    prev: Node) -> Node:
+        vcfg = cfg.vision_config
+        prev = self.llm_handler.build_layer(builder, cfg, layer_id,
+                                            tokens, B, S, prev)
+
+        # Insert cross-attention at specified layer indices
+        if vcfg and vcfg.cross_attn_layer_indices:
+            if layer_id in vcfg.cross_attn_layer_indices:
+                # Vision tokens stored in builder attrs by build_vision_stage
+                n_vision = getattr(builder, '_vision_tokens', 0)
+                if n_vision > 0:
+                    head_dim = cfg.head_dim
+                    prev = builder.cross_attention(
+                        f"L{layer_id}", tokens, n_vision,
+                        cfg.hidden_size, cfg.num_attention_heads,
+                        head_dim, B, prev_q=prev)
+        return prev
+
+
+# ------------------------------------------------------------------ #
 # ConfigExtractor
 # ------------------------------------------------------------------ #
 
@@ -218,7 +350,8 @@ class ConfigExtractor(GraphExtractor):
                 phase: str = "prefill",
                 kv_seq_len: int = 0,
                 fuse_attention: bool = False,
-                model_kv_cache: bool = False) -> ComputeGraph:
+                model_kv_cache: bool = False,
+                mm_input: Optional[MultiModalInput] = None) -> ComputeGraph:
         """Build a compute graph from a HuggingFace model config.
 
         Args:
@@ -229,6 +362,9 @@ class ConfigExtractor(GraphExtractor):
             parallel_config: Multi-device parallelism configuration.
             phase: "prefill" or "decode".
             kv_seq_len: KV cache sequence length (decode phase).
+            fuse_attention: Emit single ATTENTION_FUSED nodes.
+            model_kv_cache: Emit KV cache plumbing nodes.
+            mm_input: Multi-modal input (images, video, audio).
         """
         raw = self._load_config(config)
         cfg = normalize_config(raw)
@@ -259,11 +395,27 @@ class ConfigExtractor(GraphExtractor):
                                phase=phase_enum, kv_seq_len=effective_kv,
                                fuse_attention=fuse_attention,
                                model_kv_cache=model_kv_cache)
+
+        # --- Multi-modal vision stage (prefill only) ---
+        vision_tokens = 0
+        if (mm_input and mm_input.images and cfg.is_multimodal
+                and isinstance(handler, VLMHandler)
+                and phase_enum == Phase.PREFILL):
+            vision_node, vision_tokens = handler.build_vision_stage(
+                builder, cfg, mm_input, batch_size)
+            # Store for cross-attention handlers
+            builder._vision_tokens = vision_tokens
+
+        # Effective sequence includes vision tokens
+        if vision_tokens > 0:
+            effective_seq = effective_seq + vision_tokens
+
         tokens = batch_size * effective_seq
 
-        # Embedding
+        # Embedding (text tokens only)
+        text_seq = effective_seq - vision_tokens
         prev = builder.embedding("embedding", cfg.vocab_size,
-                                 cfg.hidden_size, batch_size, effective_seq)
+                                 cfg.hidden_size, batch_size, text_seq)
 
         # Transformer layers
         for i in range(cfg.num_hidden_layers):
@@ -305,3 +457,13 @@ for _model_type in ("llama", "mistral", "qwen2", "qwen3", "mixtral",
 # DeepSeek (MLA + mixed dense/MoE)
 ConfigExtractor.register_handler("deepseek_v2", DeepSeekHandler)
 ConfigExtractor.register_handler("deepseek_v3", DeepSeekHandler)
+
+# Vision-Language Models (VLM)
+for _model_type in ("llava", "llava_next", "llava_next_video"):
+    ConfigExtractor.register_handler(_model_type, LLaVAHandler)
+ConfigExtractor.register_handler("internvl_chat", InternVLHandler)
+ConfigExtractor.register_handler("deepseek_vl_v2", DeepSeekVLHandler)
+for _model_type in ("qwen2_5_vl", "qwen2_vl"):
+    ConfigExtractor.register_handler(_model_type, Qwen2VLHandler)
+ConfigExtractor.register_handler("gemma3", Gemma3VLHandler)
+ConfigExtractor.register_handler("pixtral", PixtralHandler)

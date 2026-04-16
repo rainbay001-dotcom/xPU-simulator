@@ -5,6 +5,9 @@ from typing import Callable
 
 
 CATEGORY_COLORS = {
+    "Vision Encoder":        "#FF6B6B",   # coral
+    "Vision Projector":      "#FF9F43",   # light orange
+    "Cross-Attention":       "#E056A0",   # pink
     "Attention Projections": "#4A90D9",   # blue
     "Attention Compute":     "#2E5EAA",   # dark blue
     "MoE Experts":           "#E8744F",   # orange
@@ -25,6 +28,13 @@ def categorize_op(name: str) -> str:
     This is the default categorization that works with standard transformer naming
     conventions (e.g., DeepSeek, LLaMA-style naming with .attn_, .moe., .ffn., etc.).
     """
+    # Vision categories (check first — prefix-based)
+    if name.startswith("vision.") and ".proj" in name:
+        return "Vision Projector"
+    elif name.startswith("vision."):
+        return "Vision Encoder"
+    elif ".xattn_" in name:
+        return "Cross-Attention"
     if ".attn_score" in name or ".attn_v" in name or ".attn_softmax" in name:
         return "Attention Compute"
     elif ".indexer_" in name or ".top_k" in name:

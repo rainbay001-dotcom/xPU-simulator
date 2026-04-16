@@ -1,6 +1,7 @@
 """Normalize HuggingFace config.json into a canonical ModelConfig."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -26,6 +27,76 @@ class AttentionPattern:
 
     # Block sparse parameters
     block_size: Optional[int] = None
+
+
+@dataclass
+class VisionConfig:
+    """Vision encoder configuration, normalized from HF vision_config."""
+    encoder_type: str = "clip"       # "clip", "siglip", "internvit", "custom"
+    image_size: int = 336            # Base image size
+    patch_size: int = 14             # Patch size
+    hidden_size: int = 1024          # Vision hidden dim
+    num_hidden_layers: int = 24      # ViT layers
+    num_attention_heads: int = 16    # ViT attention heads
+    intermediate_size: int = 4096    # ViT FFN intermediate dim
+    hidden_act: str = "gelu"         # ViT activation
+    num_channels: int = 3            # Input channels (RGB)
+
+    # Projector
+    projector_type: str = "mlp"      # "linear", "mlp", "pixel_shuffle_mlp",
+                                     # "qformer", "perceiver", "cross_attn"
+    projector_hidden_size: Optional[int] = None  # Defaults to vision hidden_size
+    spatial_merge_size: int = 1      # Per-axis spatial compression (2 → 4:1)
+
+    # Resolution strategy
+    resolution_strategy: str = "fixed"  # "fixed", "anyres", "dynamic_tile", "native"
+    max_tiles: int = 1
+    use_thumbnail: bool = False
+    tile_size: Optional[int] = None     # Defaults to image_size
+    image_grid_pinpoints: Optional[list] = None
+
+    # Perceiver / Q-Former specific
+    num_query_tokens: int = 32
+
+    # Feature extraction
+    vision_feature_layer: int = -1   # -2 means skip last layer
+
+    # Cross-attention (Phase 2)
+    cross_attn_layer_indices: Optional[list[int]] = None
+
+    @property
+    def patches_per_image(self) -> int:
+        """Patches for one tile at base resolution."""
+        return (self.image_size // self.patch_size) ** 2
+
+    @property
+    def tokens_per_tile(self) -> int:
+        """Vision tokens per tile after spatial compression."""
+        s = self.spatial_merge_size
+        return self.patches_per_image // (s * s)
+
+    def num_vision_tokens(self, img_w: int = 0, img_h: int = 0,
+                          num_tiles: int = 1) -> int:
+        """Compute total vision tokens for one image."""
+        if self.resolution_strategy == "native" and img_w > 0 and img_h > 0:
+            p = self.patch_size
+            s = self.spatial_merge_size
+            pw = math.ceil(img_w / p)
+            ph = math.ceil(img_h / p)
+            return (pw * ph) // max(s * s, 1)
+
+        effective_tiles = num_tiles
+        if self.use_thumbnail:
+            effective_tiles += 1
+        return effective_tiles * self.tokens_per_tile
+
+    def num_encoder_layers(self) -> int:
+        """ViT layers actually executed (respecting feature_layer)."""
+        if self.vision_feature_layer == -1:
+            return self.num_hidden_layers
+        elif self.vision_feature_layer < 0:
+            return self.num_hidden_layers + self.vision_feature_layer + 1
+        return self.vision_feature_layer + 1
 
 
 @dataclass
@@ -77,6 +148,13 @@ class ModelConfig:
 
     # Falcon-specific
     parallel_attn: bool = False
+
+    # Multi-modal (None if text-only)
+    vision_config: Optional[VisionConfig] = None
+
+    @property
+    def is_multimodal(self) -> bool:
+        return self.vision_config is not None
 
     @property
     def is_moe(self) -> bool:
@@ -226,6 +304,12 @@ def normalize_config(raw: dict) -> ModelConfig:
     # --- Falcon-specific ---
     parallel_attn = raw.get("parallel_attn", False)
 
+    # --- Vision config ---
+    vision_config = None
+    raw_vision = raw.get("vision_config")
+    if raw_vision and isinstance(raw_vision, dict):
+        vision_config = _normalize_vision_config(raw, raw_vision)
+
     return ModelConfig(
         model_type=model_type,
         hidden_size=hidden_size,
@@ -256,4 +340,91 @@ def normalize_config(raw: dict) -> ModelConfig:
         attention_pattern=attention_pattern,
         quant_config=quant_config,
         parallel_attn=parallel_attn,
+        vision_config=vision_config,
+    )
+
+
+def _normalize_vision_config(raw_top: dict, raw_v: dict) -> VisionConfig:
+    """Normalize HF vision_config across model families."""
+    encoder_type = raw_v.get("model_type", "custom")
+    encoder_map = {
+        "clip_vision_model": "clip",
+        "siglip_vision_model": "siglip",
+        "intern_vit_6b": "internvit",
+    }
+    encoder_type = encoder_map.get(encoder_type, encoder_type)
+
+    image_size = raw_v.get("image_size", 224)
+    patch_size = raw_v.get("patch_size") or raw_v.get("spatial_patch_size", 14)
+    hidden_size = raw_v.get("hidden_size") or raw_v.get("width", 1024)
+    num_layers = raw_v.get("num_hidden_layers") or raw_v.get("depth", 24)
+    num_heads = raw_v.get("num_attention_heads") or raw_v.get("num_heads", 16)
+    inter_size = raw_v.get("intermediate_size") or hidden_size * 4
+    hidden_act = raw_v.get("hidden_act", "gelu")
+    num_channels = raw_v.get("in_chans", raw_v.get("num_channels", 3))
+
+    # Projector type inference
+    projector_type = "mlp"
+    proj_cfg = raw_top.get("projector_config")
+    if proj_cfg and isinstance(proj_cfg, dict):
+        pt = proj_cfg.get("model_type", "")
+        if "linear" in pt:
+            projector_type = "linear"
+
+    spatial_merge = raw_v.get("spatial_merge_size", 1)
+    if raw_top.get("downsample_ratio"):
+        ratio = raw_top["downsample_ratio"]
+        if ratio < 1.0:
+            spatial_merge = int(round(1 / ratio))
+
+    if spatial_merge > 1:
+        projector_type = "pixel_shuffle_mlp"
+
+    projector_hidden = None
+    if proj_cfg and isinstance(proj_cfg, dict):
+        projector_hidden = proj_cfg.get("n_embed")
+
+    # Resolution strategy
+    resolution_strategy = "fixed"
+    max_tiles = 1
+    pinpoints = raw_top.get("image_grid_pinpoints")
+
+    if pinpoints:
+        resolution_strategy = "anyres"
+        max_tiles = max(len(p) // 2 if len(p) > 2 else 1 for p in pinpoints) if pinpoints else 1
+    elif raw_top.get("max_dynamic_patch"):
+        resolution_strategy = "dynamic_tile"
+        max_tiles = raw_top["max_dynamic_patch"]
+    elif raw_top.get("candidate_resolutions"):
+        resolution_strategy = "dynamic_tile"
+        cands = raw_top["candidate_resolutions"]
+        max_tiles = max(
+            max(1, (r[0] * r[1]) // max(image_size * image_size, 1))
+            for r in cands
+        ) if cands else 1
+
+    use_thumbnail = raw_top.get("use_thumbnail", False)
+
+    vfl = raw_top.get("vision_feature_layer", -1)
+    if isinstance(vfl, str):
+        vfl = -1
+
+    return VisionConfig(
+        encoder_type=encoder_type,
+        image_size=image_size,
+        patch_size=patch_size,
+        hidden_size=hidden_size,
+        num_hidden_layers=num_layers,
+        num_attention_heads=num_heads,
+        intermediate_size=inter_size,
+        hidden_act=hidden_act,
+        num_channels=num_channels,
+        projector_type=projector_type,
+        projector_hidden_size=projector_hidden,
+        spatial_merge_size=spatial_merge,
+        resolution_strategy=resolution_strategy,
+        max_tiles=max_tiles,
+        use_thumbnail=use_thumbnail,
+        image_grid_pinpoints=pinpoints,
+        vision_feature_layer=vfl,
     )

@@ -8,7 +8,7 @@ from ..core.operator import OpSpec, OpType, TensorSpec, Dtype, QuantConfig, Phas
 from ..core.parallel import ParallelConfig
 
 if TYPE_CHECKING:
-    from .config_normalizer import AttentionPattern
+    from .config_normalizer import AttentionPattern, VisionConfig
 
 
 class GraphBuilder:
@@ -736,6 +736,128 @@ class GraphBuilder:
         combine = self.elementwise(f"{prefix}.combine", (tokens, dim),
                                    OpType.ADD, routed_out, shared_w2)
         return combine
+
+    # ------------------------------------------------------------------ #
+    # Vision composites
+    # ------------------------------------------------------------------ #
+
+    def vision_encoder(self, prefix: str, vcfg: VisionConfig,
+                       num_patches: int, B: int = 1,
+                       prev: Node | None = None) -> Node:
+        """Build a ViT vision encoder subgraph.
+
+        Patch embedding + N ViT transformer layers (norm → MHA → norm → FFN).
+        """
+        tokens = B * num_patches
+
+        # Patch embedding: [B*P, C*p*p] × [C*p*p, D_v]
+        patch_dim = vcfg.num_channels * vcfg.patch_size * vcfg.patch_size
+        node = self.matmul(f"{prefix}.patch_embed",
+                           tokens, patch_dim, vcfg.hidden_size,
+                           *([prev] if prev else []))
+
+        n_layers = vcfg.num_encoder_layers()
+        vit_head_dim = vcfg.hidden_size // vcfg.num_attention_heads
+
+        for i in range(n_layers):
+            lp = f"{prefix}.layer{i}"
+            node = self.norm(f"{lp}.norm1", (tokens, vcfg.hidden_size), node)
+            node = self.gqa_attention(
+                f"{lp}.attn", tokens, B, num_patches,
+                dim=vcfg.hidden_size,
+                n_heads=vcfg.num_attention_heads,
+                n_kv_heads=vcfg.num_attention_heads,
+                head_dim=vit_head_dim,
+                rope=False,
+                prev=node,
+            )
+            node = self.norm(f"{lp}.norm2", (tokens, vcfg.hidden_size), node)
+            act = OpType.GELU if vcfg.hidden_act in ("gelu", "quick_gelu") \
+                  else OpType.SILU
+            node = self.dense_ffn(f"{lp}.ffn", tokens,
+                                  vcfg.hidden_size, vcfg.intermediate_size,
+                                  activation=act, prev=node)
+
+        return node
+
+    def vision_projector(self, prefix: str, vcfg: VisionConfig,
+                         num_tokens: int, llm_hidden: int,
+                         B: int = 1, prev: Node | None = None) -> Node:
+        """Build a vision-to-LLM projector subgraph."""
+        tokens = B * num_tokens
+        deps = [prev] if prev else []
+
+        if vcfg.projector_type == "linear":
+            return self.matmul(f"{prefix}.proj",
+                               tokens, vcfg.hidden_size, llm_hidden, *deps)
+
+        if vcfg.projector_type in ("mlp", "pixel_shuffle_mlp"):
+            inter = vcfg.projector_hidden_size or vcfg.hidden_size
+            in_dim = vcfg.hidden_size
+            if vcfg.projector_type == "pixel_shuffle_mlp":
+                in_dim = vcfg.hidden_size * vcfg.spatial_merge_size ** 2
+            node = self.matmul(f"{prefix}.proj_fc1",
+                               tokens, in_dim, inter, *deps)
+            node = self.elementwise(f"{prefix}.proj_act",
+                                    (tokens, inter), OpType.GELU, node)
+            node = self.matmul(f"{prefix}.proj_fc2",
+                               tokens, inter, llm_hidden, node)
+            return node
+
+        if vcfg.projector_type in ("qformer", "perceiver"):
+            q_tokens = B * vcfg.num_query_tokens
+            return self.matmul(f"{prefix}.resampler_proj",
+                               q_tokens, vcfg.hidden_size, llm_hidden, *deps)
+
+        # Fallback: linear
+        return self.matmul(f"{prefix}.proj",
+                           tokens, vcfg.hidden_size, llm_hidden, *deps)
+
+    def cross_attention(self, prefix: str, tokens_q: int, tokens_kv: int,
+                        dim: int, n_heads: int, head_dim: int,
+                        B: int = 1,
+                        prev_q: Node | None = None,
+                        prev_kv: Node | None = None) -> Node:
+        """Cross-attention: Q from text sequence, KV from vision features."""
+        q_deps = [prev_q] if prev_q else []
+        kv_deps = [prev_kv] if prev_kv else []
+
+        wq = self.linear(f"{prefix}.xattn_wq", tokens_q, dim,
+                          n_heads * head_dim, *q_deps)
+        wk = self.linear(f"{prefix}.xattn_wk", tokens_kv, dim,
+                          n_heads * head_dim, *kv_deps)
+        wv = self.linear(f"{prefix}.xattn_wv", tokens_kv, dim,
+                          n_heads * head_dim, *kv_deps)
+
+        # QK^T: [B*H, T_q, d] × [B*H, d, T_kv]
+        score_op = OpSpec(
+            OpType.MATMUL,
+            [self.t((B * n_heads, tokens_q, head_dim)),
+             self.t((B * n_heads, head_dim, tokens_kv))],
+            [self.t((B * n_heads, tokens_q, tokens_kv))],
+            name=f"{prefix}.xattn_score",
+        )
+        score = self.graph.add_node(score_op, f"{prefix}.xattn_score")
+        self.graph.add_edge(wq, score)
+        self.graph.add_edge(wk, score)
+
+        sm = self.softmax(f"{prefix}.xattn_softmax",
+                          (B * n_heads, tokens_q, tokens_kv), score)
+
+        # S*V: [B*H, T_q, T_kv] × [B*H, T_kv, d]
+        sv_op = OpSpec(
+            OpType.MATMUL,
+            [self.t((B * n_heads, tokens_q, tokens_kv)),
+             self.t((B * n_heads, tokens_kv, head_dim))],
+            [self.t((B * n_heads, tokens_q, head_dim))],
+            name=f"{prefix}.xattn_v",
+        )
+        sv = self.graph.add_node(sv_op, f"{prefix}.xattn_v")
+        self.graph.add_edge(sm, sv)
+
+        wo = self.linear(f"{prefix}.xattn_wo", tokens_q,
+                          n_heads * head_dim, dim, sv)
+        return wo
 
     # ------------------------------------------------------------------ #
     # Build
