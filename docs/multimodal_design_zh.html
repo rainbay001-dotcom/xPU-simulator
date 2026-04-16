@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>多模态模型仿真 — 设计文档 | xPU-Simulator</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --fg: #1a1a2e;
+    --accent: #2563eb;
+    --accent-light: #dbeafe;
+    --border: #e2e8f0;
+    --code-bg: #f1f5f9;
+    --table-header: #1e293b;
+    --table-stripe: #f8fafc;
+    --section-bg: #ffffff;
+    --note-bg: #fffbeb;
+    --note-border: #f59e0b;
+    --phase1: #10b981;
+    --phase2: #3b82f6;
+    --phase3: #8b5cf6;
+    --phase4: #f59e0b;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.75;
+    font-size: 15px;
+  }
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  header {
+    text-align: center;
+    margin-bottom: 48px;
+    padding-bottom: 32px;
+    border-bottom: 2px solid var(--accent);
+  }
+  header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 12px;
+    letter-spacing: 0.5px;
+  }
+  header .meta {
+    color: #64748b;
+    font-size: 14px;
+  }
+  header .meta span { margin: 0 12px; }
+  h2 {
+    font-size: 22px;
+    font-weight: 700;
+    margin: 48px 0 20px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--accent);
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 32px 0 12px;
+    color: #334155;
+  }
+  h4 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 24px 0 8px;
+    color: #475569;
+  }
+  p { margin: 10px 0; }
+  ul, ol { margin: 10px 0 10px 24px; }
+  li { margin: 4px 0; }
+  strong { font-weight: 600; }
+  code {
+    font-family: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  pre {
+    background: #1e293b;
+    color: #e2e8f0;
+    padding: 20px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  pre code {
+    background: none;
+    padding: 0;
+    color: inherit;
+  }
+  .kw { color: #c084fc; }
+  .str { color: #86efac; }
+  .cmt { color: #94a3b8; font-style: italic; }
+  .fn { color: #93c5fd; }
+  .num { color: #fbbf24; }
+  .typ { color: #67e8f9; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  thead th {
+    background: var(--table-header);
+    color: #fff;
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 13px;
+  }
+  tbody td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  tbody tr:nth-child(even) { background: var(--table-stripe); }
+  .note {
+    background: var(--note-bg);
+    border-left: 4px solid var(--note-border);
+    padding: 14px 18px;
+    margin: 16px 0;
+    border-radius: 0 6px 6px 0;
+    font-size: 14px;
+  }
+  .arch-diagram {
+    background: #1e293b;
+    color: #e2e8f0;
+    padding: 24px;
+    border-radius: 8px;
+    text-align: center;
+    font-family: monospace;
+    font-size: 14px;
+    line-height: 1.5;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .formula {
+    background: var(--code-bg);
+    padding: 12px 20px;
+    border-radius: 6px;
+    margin: 12px 0;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 14px;
+    text-align: center;
+    border: 1px solid var(--border);
+  }
+  .phase-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    margin-right: 6px;
+  }
+  .phase-1 { background: var(--phase1); }
+  .phase-2 { background: var(--phase2); }
+  .phase-3 { background: var(--phase3); }
+  .phase-4 { background: var(--phase4); }
+  .toc {
+    background: var(--section-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px 28px;
+    margin: 24px 0 40px;
+  }
+  .toc h3 { margin-top: 0; color: var(--accent); }
+  .toc ol { margin-left: 20px; }
+  .toc li { margin: 6px 0; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .ref-list { font-size: 14px; }
+  .ref-list li { margin: 6px 0; }
+  .section-card {
+    background: var(--section-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    margin: 16px 0;
+  }
+  @media (max-width: 640px) {
+    .container { padding: 20px 16px 40px; }
+    header h1 { font-size: 22px; }
+    h2 { font-size: 18px; }
+    pre { font-size: 12px; padding: 14px; }
+    table { font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>多模态模型仿真 — 设计文档</h1>
+  <div class="meta">
+    <span>日期: 2026-04-16</span>
+    <span>状态: 草案</span>
+    <span>范围: 为 xPU-Simulator 增加视觉-语言模型 (VLM) 仿真能力</span>
+  </div>
+</header>
+
+<!-- 目录 -->
+<div class="toc">
+  <h3>目录</h3>
+  <ol>
+    <li><a href="#sec1">背景与动机</a></li>
+    <li><a href="#sec2">架构调研</a>
+      <ol>
+        <li><a href="#sec2-1">VLM 整体结构</a></li>
+        <li><a href="#sec2-2">视觉编码器分类</a></li>
+        <li><a href="#sec2-3">投影器/连接器分类</a></li>
+        <li><a href="#sec2-4">动态分辨率策略</a></li>
+        <li><a href="#sec2-5">视觉 Token 融入 LLM 的方式</a></li>
+      </ol>
+    </li>
+    <li><a href="#sec3">HuggingFace 配置模式</a></li>
+    <li><a href="#sec4">方案设计</a>
+      <ol>
+        <li><a href="#sec4-1">设计原则</a></li>
+        <li><a href="#sec4-2">新数据结构</a></li>
+        <li><a href="#sec4-3">视觉编码器图构建</a></li>
+        <li><a href="#sec4-4">投影器图构建</a></li>
+        <li><a href="#sec4-5">VLM 架构 Handler</a></li>
+        <li><a href="#sec4-6">ConfigExtractor 集成</a></li>
+        <li><a href="#sec4-7">Handler 注册</a></li>
+        <li><a href="#sec4-8">算子分类扩展</a></li>
+      </ol>
+    </li>
+    <li><a href="#sec5">算力模型分析</a></li>
+    <li><a href="#sec6">Cross-Attention 模型（第二阶段）</a></li>
+    <li><a href="#sec7">实施计划</a></li>
+    <li><a href="#sec8">API 使用示例</a></li>
+    <li><a href="#sec9">参考文献</a></li>
+  </ol>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="sec1">1. 背景与动机</h2>
+
+<p>xPU-Simulator 目前仅建模纯文本 LLM 推理流程：embedding &rarr; N 层 Transformer &rarr; lm_head。多模态模型（LLaVA、Qwen2.5-VL、InternVL2.5、DeepSeek-VL2、Gemma3、Pixtral 等）在此流程前端增加了<strong>视觉编码器</strong>和<strong>投影器/连接器</strong>，将图像 Token 注入 LLM 序列。这从根本上改变了性能特征：</p>
+
+<ul>
+  <li><strong>视觉编码器</strong>是一个独立的 ViT 模型（300M&ndash;6B 参数），完全在 prefill 阶段运行，无 decode 阶段。在高分辨率场景下，FastVLM（Apple, CVPR 2025）研究表明视觉编码器耗时可<strong>超过 LLM prefill 时间 2 倍以上</strong>，成为 TTFT 的瓶颈。</li>
+  <li><strong>动态分辨率</strong>分块（InternVL、Qwen2.5-VL、LLaVA-NeXT）导致视觉 Token 数量从 ~256 到 ~13,000+ 不等，极大影响 LLM prefill 开销。</li>
+  <li><strong>Token 压缩</strong>（Pixel Shuffle、空间合并、Perceiver Resampler）在视觉 Token 进入 LLM 前对其进行缩减——这是影响延迟的关键参数。</li>
+  <li><strong>多图和视频</strong>输入可将总 Token 数推至 50K+，使吞吐量估算与纯文本模型截然不同。</li>
+</ul>
+
+<div class="note">
+  <strong>结论：</strong>如果不支持多模态仿真，模拟器将无法预测当前增长最快的一类生产模型的 TTFT。
+</div>
+
+<!-- ================================================================ -->
+<h2 id="sec2">2. 架构调研</h2>
+
+<h3 id="sec2-1">2.1 VLM 整体结构</h3>
+
+<p>所有主流 VLM 可分解为三个阶段：</p>
+
+<div class="arch-diagram">Image ──▶ 视觉编码器 ──▶ 投影器/连接器 ──▶ LLM 主干
+                                                   ▲
+Text  ─────────────────────────────────────────────┘</div>
+
+<p>计算图为<strong>顺序流水线</strong>：视觉编码器首先运行（或在独立设备上并行），其输出 Token 经投影后与文本 Embedding 拼接，完整序列进入 LLM。</p>
+
+<h3 id="sec2-2">2.2 视觉编码器分类</h3>
+
+<table>
+  <thead>
+    <tr><th>编码器</th><th>参数量</th><th>层数</th><th>隐藏维度</th><th>Patch</th><th>使用模型</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>CLIP ViT-L/14-336px</td><td>~300M</td><td>24</td><td>1024</td><td>14</td><td>LLaVA-1.5/NeXT, Phi-3.5-V</td></tr>
+    <tr><td>SigLIP-SO400M-384px</td><td>~400M</td><td>27</td><td>1152</td><td>14</td><td>DeepSeek-VL2, Gemma3, Janus-Pro</td></tr>
+    <tr><td>InternViT-6B</td><td>~5.5B</td><td>45</td><td>3200</td><td>14</td><td>InternVL2/2.5, NVLM</td></tr>
+    <tr><td>InternViT-300M</td><td>~300M</td><td>24</td><td>1024</td><td>14</td><td>InternVL2.5 小型变体</td></tr>
+    <tr><td>Pixtral-ViT</td><td>~400M</td><td>24</td><td>1024</td><td>16</td><td>Pixtral 12B (2D-RoPE)</td></tr>
+    <tr><td>Qwen2.5-VL ViT</td><td>~675M</td><td>32</td><td>1280</td><td>14</td><td>Qwen2.5-VL (窗口注意力)</td></tr>
+    <tr><td>EVA02-CLIP-E</td><td>~1B</td><td>40</td><td>1408</td><td>14</td><td>CogVLM/CogVLM2</td></tr>
+  </tbody>
+</table>
+
+<p>视觉编码器本质上是标准的 ViT：Patch Embedding（Conv2D 或线性投影）&rarr; N 层自注意力 &rarr; 可选池化。在 prefill 阶段为<strong>计算密集型</strong>（纯 GEMM），开销随 Patch 数<strong>二次增长</strong>：</p>
+
+<div class="formula">O(P<sup>2</sup> &middot; d + P &middot; d<sup>2</sup>)，其中 P = (H/p) &times; (W/p)</div>
+
+<h3 id="sec2-3">2.3 投影器/连接器分类</h3>
+
+<table>
+  <thead>
+    <tr><th>类型</th><th>机制</th><th>Token 压缩比</th><th>参数量</th><th>代表模型</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>线性投影</td><td>单层线性层</td><td>1:1</td><td>~4M</td><td>LLaVA-1.0, PaliGemma</td></tr>
+    <tr><td>MLP（两层）</td><td>Linear &rarr; GELU/SiLU &rarr; Linear</td><td>1:1</td><td>~8M</td><td>LLaVA-1.5+, InternVL2, DeepSeek-VL2</td></tr>
+    <tr><td>MLP + Pixel Shuffle</td><td>空间 2&times;2&rarr;1 合并后接 MLP</td><td>4:1</td><td>~8M</td><td>InternVL2.5, Qwen2.5-VL</td></tr>
+    <tr><td>Q-Former</td><td>32 个可学习 Query 的交叉注意力</td><td>N:32 固定</td><td>~188M</td><td>BLIP-2, InstructBLIP</td></tr>
+    <tr><td>Perceiver Resampler</td><td>可学习 Query 的交叉注意力</td><td>N:K 固定</td><td>~100M</td><td>Flamingo, IDEFICS, Apollo</td></tr>
+    <tr><td>Cross-Attention 适配器</td><td>在 LLM 层中注入交叉注意力</td><td>不适用（无拼接）</td><td>可变</td><td>Llama 3.2-Vision, Flamingo</td></tr>
+    <tr><td>C-Abstractor</td><td>基于 CNN 的空间压缩</td><td>可配置</td><td>~20M</td><td>Honeybee (CVPR 2024)</td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <strong>设计启示：</strong>MLP 投影器（含可选空间合并）覆盖了超过 80% 的生产 VLM。Q-Former 和 Perceiver 对完整性而言很重要，但可作为第二阶段补充。
+</div>
+
+<h3 id="sec2-4">2.4 动态分辨率策略</h3>
+
+<p>不同模型处理可变图像尺寸的方式各异，直接影响视觉 Token 数量：</p>
+
+<table>
+  <thead>
+    <tr><th>策略</th><th>模型</th><th>工作方式</th><th>Token 计算公式</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>固定缩放</td><td>LLaVA-1.5</td><td>所有图像缩放至 336&times;336</td><td><code>(336/p)&sup2; = 576</code></td></tr>
+    <tr><td>AnyRes 网格</td><td>LLaVA-NeXT</td><td>图像适配至锚点网格（如 2&times;2）</td><td><code>N_tiles &times; (tile/p)&sup2;</code></td></tr>
+    <tr><td>动态分块</td><td>InternVL2.5</td><td>选择 1&ndash;12 块 448&times;448 + 缩略图</td><td><code>(N_tiles+1) &times; (448/p)&sup2; / 压缩比</code></td></tr>
+    <tr><td>原生动态</td><td>Qwen2.5-VL</td><td>不分块；ViT 以原始分辨率运行</td><td><code>&lceil;H/p&rceil; &times; &lceil;W/p&rceil; / 合并比</code></td></tr>
+    <tr><td>候选集</td><td>DeepSeek-VL2</td><td>从 23 个预定义分辨率中选择</td><td><code>H_eff/p &times; W_eff/p</code></td></tr>
+    <tr><td>Pan-and-Scan</td><td>Gemma3</td><td>自适应裁剪至固定 896&times;896</td><td>每张图固定 256</td></tr>
+  </tbody>
+</table>
+
+<p><strong>关键参数：</strong><code>num_vision_tokens(image_width, image_height)</code> — 这是驱动 LLM prefill 开销的核心输入。</p>
+
+<h3 id="sec2-5">2.5 视觉 Token 融入 LLM 的方式</h3>
+
+<p>三种集成范式：</p>
+
+<ol>
+  <li><strong>序列拼接</strong>（最主流）：视觉 Token 投影至 LLM 隐藏维度后与文本 Embedding 拼接：<code>[BOS, &lt;img_start&gt;, v1, v2, ..., vN, &lt;img_end&gt;, t1, t2, ...]</code>。统一序列上执行标准自注意力。LLaVA、InternVL、DeepSeek-VL2、Qwen2.5-VL、Pixtral、Gemma3 均采用此方式。</li>
+  <li><strong>Cross-Attention 注入</strong>：视觉 Token 不在序列中。在 LLM 的特定层（每 K 层）插入专用的交叉注意力层来访问视觉特征。Flamingo 和 Llama 3.2-Vision 采用此方式。需修改 LLM 层模板。</li>
+  <li><strong>模态专家</strong>（CogVLM）：每个 LLM 层中为每种模态设置并行的 QKV + FFN。视觉 Token 使用视觉专家，文本 Token 使用文本专家。每层参数翻倍但保持模态分离。</li>
+</ol>
+
+<div class="note">
+  <strong>设计启示：</strong>序列拼接作为默认方案 — 它只改变输入 LLM 的有效序列长度，现有仿真逻辑无需修改。Cross-Attention 和模态专家需要新的 LLM 层变体。
+</div>
+
+<!-- ================================================================ -->
+<h2 id="sec3">3. HuggingFace 配置模式</h2>
+
+<p>多模态 HF 配置文件将 <code>vision_config</code> 嵌套在顶层配置中：</p>
+
+<pre><code>{
+  <span class="str">"model_type"</span>: <span class="str">"llava_next"</span>,
+  <span class="str">"text_config"</span>: {
+    <span class="str">"model_type"</span>: <span class="str">"llama"</span>,
+    <span class="str">"hidden_size"</span>: <span class="num">4096</span>,
+    <span class="str">"num_hidden_layers"</span>: <span class="num">32</span>,
+    ...
+  },
+  <span class="str">"vision_config"</span>: {
+    <span class="str">"model_type"</span>: <span class="str">"clip_vision_model"</span>,
+    <span class="str">"image_size"</span>: <span class="num">336</span>,
+    <span class="str">"patch_size"</span>: <span class="num">14</span>,
+    <span class="str">"hidden_size"</span>: <span class="num">1024</span>,
+    <span class="str">"num_hidden_layers"</span>: <span class="num">24</span>,
+    <span class="str">"num_attention_heads"</span>: <span class="num">16</span>,
+    <span class="str">"intermediate_size"</span>: <span class="num">4096</span>
+  },
+  <span class="str">"image_grid_pinpoints"</span>: [[<span class="num">336</span>,<span class="num">672</span>],[<span class="num">672</span>,<span class="num">336</span>],[<span class="num">672</span>,<span class="num">672</span>]],
+  <span class="str">"projector_hidden_act"</span>: <span class="str">"gelu"</span>,
+  <span class="str">"vision_feature_layer"</span>: <span class="num">-2</span>
+}</code></pre>
+
+<p><strong>配置归一化器的关键发现：</strong></p>
+
+<ul>
+  <li><code>vision_config</code> 字段在各模型间一致：<code>image_size</code>、<code>patch_size</code>、<code>hidden_size</code>、<code>num_hidden_layers</code>、<code>num_attention_heads</code>、<code>intermediate_size</code>。</li>
+  <li><strong>LLM 文本配置</strong>可能嵌套在 <code>text_config</code> 下或直接内联于顶层（因模型而异）。</li>
+  <li><strong>投影器</strong>配置为隐式（<code>projector_hidden_act</code> 字段）或显式（DeepSeek-VL2 的 <code>projector_config</code> 块）。</li>
+  <li><strong>分辨率策略</strong>因模型而异：<code>image_grid_pinpoints</code>（LLaVA-NeXT）、<code>candidate_resolutions</code>（DeepSeek-VL2）、<code>max_dynamic_patch</code> + <code>force_image_size</code>（InternVL）、<code>spatial_merge_size</code>（Qwen2.5-VL）。</li>
+  <li>多模态 <code>model_type</code> 值：<code>llava</code>、<code>llava_next</code>、<code>qwen2_5_vl</code>、<code>internvl_chat</code>、<code>deepseek_vl_v2</code>、<code>phi3_v</code>、<code>gemma3</code>、<code>pixtral</code>、<code>idefics2</code>。</li>
+</ul>
+
+<!-- ================================================================ -->
+<h2 id="sec4">4. 方案设计</h2>
+
+<h3 id="sec4-1">4.1 设计原则</h3>
+
+<div class="section-card">
+<ol>
+  <li><strong>复用，不复制</strong>：视觉编码器是标准 Transformer — 复用 <code>GraphBuilder.gqa_attention</code>、<code>dense_ffn</code>、<code>norm</code> 等。LLM 主干不变，仅有效序列长度增加。</li>
+  <li><strong>配置驱动</strong>：沿用现有 <code>normalize_config &rarr; ArchitectureHandler.build_layer</code> 模式。新增 <code>VisionConfig</code> 数据类和 <code>VLMHandler</code> 基类。从 HF config.json 自动检测。</li>
+  <li><strong>可组合</strong>：VLM Handler 包装现有 LLM Handler（如 <code>StandardTransformerHandler</code>）— 不复制 LLM 层逻辑。</li>
+  <li><strong>分辨率感知</strong>：用户指定图像尺寸；Handler 根据模型的分辨率策略计算视觉 Token 数量。</li>
+</ol>
+</div>
+
+<h3 id="sec4-2">4.2 新数据结构</h3>
+
+<h4><code>VisionConfig</code> 数据类（<code>frontend/config_normalizer.py</code>）</h4>
+
+<pre><code><span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="typ">VisionConfig</span>:
+    <span class="str">"""视觉编码器配置，从 HF vision_config 归一化而来。"""</span>
+    encoder_type: <span class="typ">str</span>              <span class="cmt"># "clip", "siglip", "internvit", "custom"</span>
+    image_size: <span class="typ">int</span>                <span class="cmt"># 基础图像尺寸（如 336, 384, 448）</span>
+    patch_size: <span class="typ">int</span>                <span class="cmt"># Patch 尺寸（如 14, 16）</span>
+    hidden_size: <span class="typ">int</span>               <span class="cmt"># 视觉隐藏维度</span>
+    num_hidden_layers: <span class="typ">int</span>         <span class="cmt"># ViT 层数</span>
+    num_attention_heads: <span class="typ">int</span>       <span class="cmt"># ViT 注意力头数</span>
+    intermediate_size: <span class="typ">int</span>         <span class="cmt"># ViT FFN 中间维度</span>
+    hidden_act: <span class="typ">str</span> = <span class="str">"gelu"</span>       <span class="cmt"># ViT 激活函数</span>
+    num_channels: <span class="typ">int</span> = <span class="num">3</span>          <span class="cmt"># 输入通道数（RGB）</span>
+
+    <span class="cmt"># 投影器</span>
+    projector_type: <span class="typ">str</span> = <span class="str">"mlp"</span>    <span class="cmt"># "linear", "mlp", "qformer", "perceiver",</span>
+                                   <span class="cmt"># "cross_attn", "pixel_shuffle_mlp"</span>
+    projector_hidden_size: <span class="typ">int</span> | <span class="typ">None</span> = <span class="typ">None</span>
+    projector_output_size: <span class="typ">int</span> | <span class="typ">None</span> = <span class="typ">None</span>
+    spatial_merge_size: <span class="typ">int</span> = <span class="num">1</span>    <span class="cmt"># 每轴空间压缩因子（2 表示 2×2=4 Token → 1 Token）</span>
+
+    <span class="cmt"># 分辨率策略</span>
+    resolution_strategy: <span class="typ">str</span> = <span class="str">"fixed"</span>  <span class="cmt"># "fixed", "anyres", "dynamic_tile", "native"</span>
+    max_tiles: <span class="typ">int</span> = <span class="num">1</span>
+    use_thumbnail: <span class="typ">bool</span> = <span class="typ">False</span>
+    tile_size: <span class="typ">int</span> | <span class="typ">None</span> = <span class="typ">None</span>
+    image_grid_pinpoints: <span class="typ">list</span>[<span class="typ">list</span>[<span class="typ">int</span>]] | <span class="typ">None</span> = <span class="typ">None</span>
+
+    <span class="cmt"># Perceiver / Q-Former 专用</span>
+    num_query_tokens: <span class="typ">int</span> = <span class="num">32</span>
+
+    <span class="cmt"># 特征提取</span>
+    vision_feature_layer: <span class="typ">int</span> = <span class="num">-1</span>  <span class="cmt"># 从 ViT 哪一层提取特征（-2 表示跳过最后一层）</span>
+
+    <span class="kw">@property</span>
+    <span class="kw">def</span> <span class="fn">patches_per_image</span>(<span class="kw">self</span>) -> <span class="typ">int</span>:
+        <span class="str">"""单个 tile 在基础分辨率下的 Patch 数量。"""</span>
+        <span class="kw">return</span> (<span class="kw">self</span>.image_size // <span class="kw">self</span>.patch_size) ** <span class="num">2</span>
+
+    <span class="kw">@property</span>
+    <span class="kw">def</span> <span class="fn">tokens_per_tile</span>(<span class="kw">self</span>) -> <span class="typ">int</span>:
+        <span class="str">"""空间压缩后每个 tile 的视觉 Token 数。"""</span>
+        s = <span class="kw">self</span>.spatial_merge_size
+        <span class="kw">return</span> <span class="kw">self</span>.patches_per_image // (s * s)
+
+    <span class="kw">def</span> <span class="fn">num_vision_tokens</span>(<span class="kw">self</span>, img_w=<span class="num">0</span>, img_h=<span class="num">0</span>, num_tiles=<span class="num">1</span>) -> <span class="typ">int</span>:
+        <span class="str">"""根据图像尺寸或 tile 数计算总视觉 Token 数。"""</span>
+        <span class="kw">if</span> <span class="kw">self</span>.resolution_strategy == <span class="str">"native"</span> <span class="kw">and</span> img_w > <span class="num">0</span> <span class="kw">and</span> img_h > <span class="num">0</span>:
+            p = <span class="kw">self</span>.patch_size
+            s = <span class="kw">self</span>.spatial_merge_size
+            <span class="kw">return</span> (math.ceil(img_w/p) * math.ceil(img_h/p)) // (s * s)
+        effective_tiles = num_tiles + (<span class="num">1</span> <span class="kw">if</span> <span class="kw">self</span>.use_thumbnail <span class="kw">else</span> <span class="num">0</span>)
+        <span class="kw">return</span> effective_tiles * <span class="kw">self</span>.tokens_per_tile</code></pre>
+
+<h4>扩展 <code>ModelConfig</code></h4>
+
+<pre><code><span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="typ">ModelConfig</span>:
+    <span class="cmt"># ... 现有字段 ...</span>
+
+    <span class="cmt"># 多模态（纯文本模型为 None）</span>
+    vision_config: <span class="typ">VisionConfig</span> | <span class="typ">None</span> = <span class="typ">None</span>
+
+    <span class="kw">@property</span>
+    <span class="kw">def</span> <span class="fn">is_multimodal</span>(<span class="kw">self</span>) -> <span class="typ">bool</span>:
+        <span class="kw">return</span> <span class="kw">self</span>.vision_config <span class="kw">is not</span> <span class="typ">None</span></code></pre>
+
+<h4><code>MultiModalInput</code> — 每次请求的输入规格</h4>
+
+<pre><code><span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="typ">MultiModalInput</span>:
+    <span class="str">"""描述单次请求的多模态内容。"""</span>
+    num_text_tokens: <span class="typ">int</span> = <span class="num">0</span>
+    images: <span class="typ">list</span>[<span class="typ">ImageInput</span>] = field(default_factory=<span class="typ">list</span>)
+    <span class="cmt"># 未来扩展: video_clips, audio_segments</span>
+
+<span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="typ">ImageInput</span>:
+    width: <span class="typ">int</span> = <span class="num">0</span>       <span class="cmt"># 0 = 使用模型默认值</span>
+    height: <span class="typ">int</span> = <span class="num">0</span>
+    num_tiles: <span class="typ">int</span> = <span class="num">1</span>   <span class="cmt"># 预计算的 tile 数（用于 anyres/dynamic_tile）</span></code></pre>
+
+<h3 id="sec4-3">4.3 视觉编码器图构建</h3>
+
+<p>在 <code>GraphBuilder</code> 中新增 <code>vision_encoder</code> 组合方法：</p>
+
+<pre><code><span class="kw">def</span> <span class="fn">vision_encoder</span>(<span class="kw">self</span>, prefix: <span class="typ">str</span>, vcfg: <span class="typ">VisionConfig</span>,
+                   num_patches: <span class="typ">int</span>, B: <span class="typ">int</span> = <span class="num">1</span>,
+                   prev: <span class="typ">Node</span> | <span class="typ">None</span> = <span class="typ">None</span>) -> <span class="typ">Node</span>:
+    <span class="str">"""构建 ViT 视觉编码器子图。"""</span>
+    tokens = B * num_patches
+
+    <span class="cmt"># 1. Patch Embedding：等效于线性投影</span>
+    <span class="cmt">#    [B*P, C*p*p] × [C*p*p, D_v]</span>
+    patch_dim = vcfg.num_channels * vcfg.patch_size * vcfg.patch_size
+    node = <span class="kw">self</span>.matmul(f<span class="str">"{prefix}.patch_embed"</span>,
+                       tokens, patch_dim, vcfg.hidden_size,
+                       *([prev] <span class="kw">if</span> prev <span class="kw">else</span> []))
+
+    <span class="cmt"># 2. ViT Transformer 层</span>
+    n_layers = vcfg.num_encoder_layers()
+    <span class="kw">for</span> i <span class="kw">in</span> range(n_layers):
+        lp = f<span class="str">"{prefix}.layer{i}"</span>
+        <span class="cmt"># Pre-Norm</span>
+        node = <span class="kw">self</span>.norm(f<span class="str">"{lp}.norm1"</span>, (tokens, vcfg.hidden_size), node)
+        <span class="cmt"># 自注意力（ViT 使用标准 MHA，非 GQA/MLA）</span>
+        node = <span class="kw">self</span>.gqa_attention(
+            f<span class="str">"{lp}.attn"</span>, tokens, B, num_patches,
+            dim=vcfg.hidden_size,
+            n_heads=vcfg.num_attention_heads,
+            n_kv_heads=vcfg.num_attention_heads,  <span class="cmt"># MHA</span>
+            head_dim=vcfg.hidden_size // vcfg.num_attention_heads,
+            rope=<span class="typ">False</span>,  <span class="cmt"># ViT 使用学习/绝对位置编码</span>
+            prev=node,
+        )
+        <span class="cmt"># FFN Pre-Norm</span>
+        node = <span class="kw">self</span>.norm(f<span class="str">"{lp}.norm2"</span>, (tokens, vcfg.hidden_size), node)
+        <span class="cmt"># FFN</span>
+        act = OpType.GELU <span class="kw">if</span> vcfg.hidden_act <span class="kw">in</span> (<span class="str">"gelu"</span>, <span class="str">"quick_gelu"</span>) \
+              <span class="kw">else</span> OpType.SILU
+        node = <span class="kw">self</span>.dense_ffn(f<span class="str">"{lp}.ffn"</span>, tokens,
+                              vcfg.hidden_size, vcfg.intermediate_size,
+                              activation=act, prev=node)
+
+    <span class="kw">return</span> node</code></pre>
+
+<h3 id="sec4-4">4.4 投影器图构建</h3>
+
+<pre><code><span class="kw">def</span> <span class="fn">vision_projector</span>(<span class="kw">self</span>, prefix: <span class="typ">str</span>, vcfg: <span class="typ">VisionConfig</span>,
+                     num_tokens: <span class="typ">int</span>, llm_hidden: <span class="typ">int</span>,
+                     B: <span class="typ">int</span> = <span class="num">1</span>, prev: <span class="typ">Node</span> | <span class="typ">None</span> = <span class="typ">None</span>) -> <span class="typ">Node</span>:
+    <span class="str">"""构建视觉到 LLM 的投影器子图。"""</span>
+    tokens = B * num_tokens
+
+    <span class="kw">if</span> vcfg.projector_type == <span class="str">"linear"</span>:
+        <span class="kw">return</span> <span class="kw">self</span>.matmul(f<span class="str">"{prefix}.proj"</span>,
+                           tokens, vcfg.hidden_size, llm_hidden, ...)
+
+    <span class="kw">elif</span> vcfg.projector_type <span class="kw">in</span> (<span class="str">"mlp"</span>, <span class="str">"pixel_shuffle_mlp"</span>):
+        inter = vcfg.projector_hidden_size <span class="kw">or</span> vcfg.hidden_size
+        in_dim = vcfg.hidden_size
+        <span class="kw">if</span> vcfg.projector_type == <span class="str">"pixel_shuffle_mlp"</span>:
+            in_dim = vcfg.hidden_size * vcfg.spatial_merge_size ** <span class="num">2</span>
+        node = <span class="kw">self</span>.matmul(f<span class="str">"{prefix}.proj_fc1"</span>, tokens, in_dim, inter, ...)
+        node = <span class="kw">self</span>.elementwise(f<span class="str">"{prefix}.proj_act"</span>,
+                                (tokens, inter), OpType.GELU, node)
+        node = <span class="kw">self</span>.matmul(f<span class="str">"{prefix}.proj_fc2"</span>, tokens, inter, llm_hidden, node)
+        <span class="kw">return</span> node
+
+    <span class="kw">elif</span> vcfg.projector_type == <span class="str">"qformer"</span>:
+        <span class="cmt"># Q-Former：固定输出 num_query_tokens 个 Token</span>
+        q_tokens = B * vcfg.num_query_tokens
+        node = <span class="kw">self</span>.matmul(f<span class="str">"{prefix}.qformer_cross"</span>,
+                           q_tokens, vcfg.hidden_size, llm_hidden, ...)
+        <span class="kw">return</span> node
+
+    <span class="kw">elif</span> vcfg.projector_type == <span class="str">"perceiver"</span>:
+        q_tokens = B * vcfg.num_query_tokens
+        node = <span class="kw">self</span>.matmul(f<span class="str">"{prefix}.perceiver_proj"</span>,
+                           q_tokens, vcfg.hidden_size, llm_hidden, ...)
+        <span class="kw">return</span> node
+    <span class="cmt"># ... 回退为线性投影</span></code></pre>
+
+<h3 id="sec4-5">4.5 VLM 架构 Handler</h3>
+
+<h4>基类 <code>VLMHandler</code></h4>
+
+<pre><code><span class="kw">class</span> <span class="typ">VLMHandler</span>(<span class="typ">ArchitectureHandler</span>):
+    <span class="str">"""视觉-语言模型的基础 Handler。
+    包装现有 LLM Handler，在前端添加视觉编码器 + 投影器。
+    子类只需重写分辨率/分块逻辑。"""</span>
+
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="kw">self</span>, llm_handler: <span class="typ">ArchitectureHandler</span>):
+        <span class="kw">self</span>.llm_handler = llm_handler
+
+    <span class="kw">def</span> <span class="fn">build_vision_stage</span>(<span class="kw">self</span>, builder, cfg, mm_input, B):
+        <span class="str">"""构建视觉编码器 + 投影器。
+        返回 (last_node, num_vision_tokens)。"""</span>
+        vcfg = cfg.vision_config
+        total_vision_tokens = <span class="num">0</span>
+
+        last_node = <span class="typ">None</span>
+        <span class="kw">for</span> i, img <span class="kw">in</span> enumerate(mm_input.images):
+            num_patches = <span class="kw">self</span>._compute_patches(vcfg, img)
+            enc_node = builder.vision_encoder(
+                f<span class="str">"vision.img{i}"</span>, vcfg, num_patches, B, last_node)
+
+            <span class="cmt"># 空间压缩后的 Token 数</span>
+            <span class="kw">if</span> vcfg.projector_type == <span class="str">"pixel_shuffle_mlp"</span>:
+                proj_tokens = num_patches // (vcfg.spatial_merge_size ** <span class="num">2</span>)
+            <span class="kw">elif</span> vcfg.projector_type <span class="kw">in</span> (<span class="str">"qformer"</span>, <span class="str">"perceiver"</span>):
+                proj_tokens = vcfg.num_query_tokens
+            <span class="kw">else</span>:
+                proj_tokens = num_patches
+
+            last_node = builder.vision_projector(
+                f<span class="str">"vision.img{i}"</span>, vcfg, proj_tokens,
+                cfg.hidden_size, B, enc_node)
+            total_vision_tokens += proj_tokens
+
+        <span class="kw">return</span> last_node, total_vision_tokens</code></pre>
+
+<h4>具体 VLM Handler（组合优于继承）</h4>
+
+<pre><code><span class="kw">class</span> <span class="typ">LLaVAHandler</span>(<span class="typ">VLMHandler</span>):
+    <span class="str">"""LLaVA-1.5, LLaVA-NeXT: CLIP/SigLIP 编码器 + MLP 投影器 + LLM"""</span>
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="kw">self</span>):
+        <span class="kw">super</span>().__init__(<span class="typ">StandardTransformerHandler</span>())
+
+<span class="kw">class</span> <span class="typ">InternVLHandler</span>(<span class="typ">VLMHandler</span>):
+    <span class="str">"""InternVL2/2.5: InternViT + Pixel-Shuffle MLP + LLM"""</span>
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="kw">self</span>):
+        <span class="kw">super</span>().__init__(<span class="typ">StandardTransformerHandler</span>())
+
+<span class="kw">class</span> <span class="typ">DeepSeekVLHandler</span>(<span class="typ">VLMHandler</span>):
+    <span class="str">"""DeepSeek-VL2: SigLIP + MLP + DeepSeek MoE LLM"""</span>
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="kw">self</span>):
+        <span class="kw">super</span>().__init__(<span class="typ">DeepSeekHandler</span>())</code></pre>
+
+<h3 id="sec4-6">4.6 ConfigExtractor 集成</h3>
+
+<p>扩展 <code>ConfigExtractor.extract()</code> 以处理多模态配置：</p>
+
+<pre><code><span class="kw">def</span> <span class="fn">extract</span>(<span class="kw">self</span>, config, batch_size=<span class="num">1</span>, seq_len=<span class="num">1024</span>,
+            mm_input: <span class="typ">MultiModalInput</span> | <span class="typ">None</span> = <span class="typ">None</span>,
+            **kwargs) -> <span class="typ">ComputeGraph</span>:
+    raw = <span class="kw">self</span>._load_config(config)
+    cfg = normalize_config(raw)  <span class="cmt"># 现在也解析 vision_config</span>
+
+    <span class="kw">if</span> cfg.is_multimodal <span class="kw">and</span> mm_input:
+        <span class="kw">return</span> <span class="kw">self</span>._extract_multimodal(cfg, batch_size, seq_len,
+                                        mm_input, **kwargs)
+    <span class="kw">else</span>:
+        <span class="kw">return</span> <span class="kw">self</span>._extract_text_only(cfg, batch_size, seq_len, **kwargs)</code></pre>
+
+<p><code>normalize_config</code> 新增视觉配置解析逻辑，将 HF <code>vision_config</code> 归一化为 <code>VisionConfig</code>。处理编码器类型映射（<code>clip_vision_model</code> &rarr; <code>"clip"</code>）、投影器类型推断、空间合并参数、分辨率策略检测等。</p>
+
+<h3 id="sec4-7">4.7 Handler 注册</h3>
+
+<pre><code><span class="cmt"># 注册 VLM Handler</span>
+<span class="kw">for</span> _model_type <span class="kw">in</span> (<span class="str">"llava"</span>, <span class="str">"llava_next"</span>, <span class="str">"llava_next_video"</span>):
+    ConfigExtractor.register_handler(_model_type, <span class="typ">LLaVAHandler</span>)
+
+ConfigExtractor.register_handler(<span class="str">"internvl_chat"</span>, <span class="typ">InternVLHandler</span>)
+ConfigExtractor.register_handler(<span class="str">"deepseek_vl_v2"</span>, <span class="typ">DeepSeekVLHandler</span>)
+
+<span class="kw">for</span> _model_type <span class="kw">in</span> (<span class="str">"qwen2_5_vl"</span>, <span class="str">"qwen2_vl"</span>):
+    ConfigExtractor.register_handler(_model_type, <span class="typ">Qwen2VLHandler</span>)
+
+ConfigExtractor.register_handler(<span class="str">"gemma3"</span>, <span class="typ">Gemma3Handler</span>)
+ConfigExtractor.register_handler(<span class="str">"pixtral"</span>, <span class="typ">PixtralHandler</span>)</code></pre>
+
+<h3 id="sec4-8">4.8 算子分类扩展</h3>
+
+<p>扩展 <code>categories.py</code> 以识别视觉算子：</p>
+
+<pre><code>CATEGORY_COLORS = {
+    <span class="cmt"># ... 现有类别 ...</span>
+    <span class="str">"Vision Encoder"</span>:    <span class="str">"#FF6B6B"</span>,   <span class="cmt"># 珊瑚色</span>
+    <span class="str">"Vision Projector"</span>:  <span class="str">"#FF9F43"</span>,   <span class="cmt"># 浅橙色</span>
+}
+
+<span class="kw">def</span> <span class="fn">categorize_op</span>(name: <span class="typ">str</span>) -> <span class="typ">str</span>:
+    <span class="cmt"># 视觉类别（优先检查 — 基于前缀）</span>
+    <span class="kw">if</span> name.startswith(<span class="str">"vision."</span>) <span class="kw">and</span> <span class="str">".proj"</span> <span class="kw">in</span> name:
+        <span class="kw">return</span> <span class="str">"Vision Projector"</span>
+    <span class="kw">elif</span> name.startswith(<span class="str">"vision."</span>):
+        <span class="kw">return</span> <span class="str">"Vision Encoder"</span>
+    <span class="cmt"># ... 现有类别 ...</span></code></pre>
+
+<!-- ================================================================ -->
+<h2 id="sec5">5. 算力模型分析</h2>
+
+<h3>5.1 视觉编码器开销</h3>
+
+<p>视觉编码器是标准的 ViT — 其算子（MATMUL、LAYER_NORM、SOFTMAX、GELU）已被现有 GPU 和 NPU 算力模型支持。<strong>无需新增算子类型。</strong></p>
+
+<p>关键开销特征：</p>
+<ul>
+  <li><strong>Patch Embedding</strong>：一次 MATMUL，形状为 <code>[B*P, C*p*p] &times; [C*p*p, D_v]</code>。336px/p=14 时：<code>[576, 588] &times; [588, 1024]</code> — 较小，访存瓶颈。</li>
+  <li><strong>ViT 自注意力</strong>：<code>[B*H, P, P]</code> 注意力矩阵。336px 时 P=576，可控。896px + 4 块时 P=4096+，因二次增长成为瓶颈。</li>
+  <li><strong>ViT FFN</strong>：<code>[B*P, D_v] &times; [D_v, 4*D_v]</code> — 标准 MATMUL，大 P 时为计算瓶颈。</li>
+</ul>
+
+<h3>5.2 Prefill 序列长度</h3>
+
+<p>对于包含长度为 T 的文本提示和 N 张图像（共产生 V 个视觉 Token）的 VLM 请求：</p>
+
+<div class="formula">effective_prefill_seq = V + T</div>
+
+<p>这就是送入 LLM 主干的序列长度。模拟器可直接使用此值 — 对于序列拼接模型，LLM 代码无需任何修改。</p>
+
+<h3>5.3 TTFT 分解</h3>
+
+<div class="formula">TTFT = 视觉编码器时间 + 投影器时间 + LLM prefill 时间(V + T)</div>
+
+<p>HTML 报告应展示此分解。视觉编码器和投影器仅在 prefill 阶段运行 — 不参与 decode。</p>
+
+<h3>5.4 Decode 阶段</h3>
+
+<p>对于序列拼接模型，Decode <strong>不变</strong>：每步仅生成一个新文本 Token，对完整 KV Cache（包含缓存的视觉 Token KV）执行注意力。KV Cache 大小增加了 V 个条目，影响内存但不影响每 Token 的 decode 延迟（超出已建模的 KV 注意力开销之外）。</p>
+
+<h3>5.5 多图与视频</h3>
+
+<p>对于 N 张图像，Token 数分别为 V<sub>1</sub>, V<sub>2</sub>, ..., V<sub>N</sub>：</p>
+
+<div class="formula">total_vision_tokens = &sum; V<sub>i</sub><br>effective_prefill_seq = &sum; V<sub>i</sub> + T</div>
+
+<p>视频建模为图像帧序列，可选时间压缩（如 Qwen2.5-VL 的 <code>temporal_patch_size=2</code> 将帧数减半）。</p>
+
+<!-- ================================================================ -->
+<h2 id="sec6">6. Cross-Attention 模型（第二阶段）</h2>
+
+<p>对于 Llama 3.2-Vision 等模型，视觉 Token 不拼接到序列中，而是通过特定 LLM 层中的交叉注意力访问：</p>
+
+<ul>
+  <li>在 <code>VisionConfig</code> 中新增 <code>cross_attn_layer_indices</code> 字段（例如每 4 层插入一次）。</li>
+  <li>修改 LLM Handler 的 <code>build_layer</code>，条件性地插入交叉注意力块：<code>cross_attn(Q=文本Token, KV=视觉Token)</code>。</li>
+  <li>交叉注意力的 MATMUL 形状为 <code>[B*H, T, V]</code>（QK）和 <code>[B*H, T, D]</code>（输出）— 不同于自注意力的 <code>[B*H, T, T]</code>。</li>
+</ul>
+
+<p>这是对 <code>build_layer</code> 的局部扩展，不影响流水线其余部分。</p>
+
+<!-- ================================================================ -->
+<h2 id="sec7">7. 实施计划</h2>
+
+<h3><span class="phase-badge phase-1">Phase 1</span> 核心 VLM 支持（序列拼接）</h3>
+
+<table>
+  <thead>
+    <tr><th>步骤</th><th>涉及文件</th><th>描述</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td><code>config_normalizer.py</code></td><td>新增 <code>VisionConfig</code> 数据类，扩展 <code>ModelConfig</code>，新增 <code>_normalize_vision_config()</code></td></tr>
+    <tr><td>2</td><td><code>graph_builder.py</code></td><td>新增 <code>vision_encoder()</code> 和 <code>vision_projector()</code> 组合方法</td></tr>
+    <tr><td>3</td><td><code>config_extractor.py</code></td><td>新增 <code>VLMHandler</code> 基类、<code>LLaVAHandler</code>、<code>InternVLHandler</code> 等</td></tr>
+    <tr><td>4</td><td><code>operator.py</code></td><td>如 CNN 投影器需要则新增 <code>CONV2D_DEPTHWISE</code>（大概率不需要）</td></tr>
+    <tr><td>5</td><td><code>categories.py</code></td><td>新增 "Vision Encoder" 和 "Vision Projector" 类别</td></tr>
+    <tr><td>6</td><td><code>html_report.py</code></td><td>在架构概览中添加视觉阶段，展示 TTFT 分解</td></tr>
+    <tr><td>7</td><td><code>tests/test_multimodal.py</code></td><td>VisionConfig 归一化、图构建、Token 计数的测试</td></tr>
+  </tbody>
+</table>
+
+<p><strong>Phase 1 目标模型</strong>：LLaVA-1.5、LLaVA-NeXT、InternVL2.5、Qwen2.5-VL、DeepSeek-VL2、Gemma3、Pixtral。</p>
+
+<h3><span class="phase-badge phase-2">Phase 2</span> Cross-Attention 与高级投影器</h3>
+
+<table>
+  <thead>
+    <tr><th>步骤</th><th>涉及文件</th><th>描述</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td><code>graph_builder.py</code></td><td>新增 <code>cross_attention()</code> 方法（Q 来自文本，KV 来自视觉）</td></tr>
+    <tr><td>2</td><td><code>config_extractor.py</code></td><td>新增 <code>CrossAttnVLMHandler</code>，修改 <code>build_layer</code></td></tr>
+    <tr><td>3</td><td><code>graph_builder.py</code></td><td>完整的 Q-Former 和 Perceiver Resampler 图构建</td></tr>
+    <tr><td>4</td><td><code>config_normalizer.py</code></td><td>解析 Cross-Attention 配置（层索引、门控）</td></tr>
+  </tbody>
+</table>
+
+<p><strong>目标模型</strong>：Llama 3.2-Vision、Flamingo/IDEFICS。</p>
+
+<h3><span class="phase-badge phase-3">Phase 3</span> 视频与音频</h3>
+
+<table>
+  <thead>
+    <tr><th>步骤</th><th>涉及文件</th><th>描述</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td><code>config_normalizer.py</code></td><td>新增 <code>VideoConfig</code>（帧采样、时间压缩）</td></tr>
+    <tr><td>2</td><td><code>graph_builder.py</code></td><td>新增视频 3D Patch Embedding（Conv3D 等效）</td></tr>
+    <tr><td>3</td><td><code>config_normalizer.py</code></td><td>新增 <code>AudioConfig</code>（Whisper 风格编码器）</td></tr>
+  </tbody>
+</table>
+
+<h3><span class="phase-badge phase-4">Phase 4</span> 多模态 Serving 仿真</h3>
+
+<table>
+  <thead>
+    <tr><th>步骤</th><th>涉及文件</th><th>描述</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td><code>serving/</code></td><td>扩展请求模型以包含 <code>MultiModalInput</code>，支持每请求可变的 prefill 开销</td></tr>
+    <tr><td>2</td><td><code>serving/</code></td><td>视觉编码器调度（跨请求批处理、与 LLM 流水线化）</td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="sec8">8. API 使用示例</h2>
+
+<h3>基础 VLM 仿真</h3>
+
+<pre><code><span class="kw">from</span> xpu_simulator <span class="kw">import</span> ConfigExtractor, MultiModalInput, ImageInput
+
+ext = <span class="typ">ConfigExtractor</span>()
+graph = ext.extract(
+    <span class="str">"path/to/llava-next-config.json"</span>,
+    batch_size=<span class="num">1</span>,
+    seq_len=<span class="num">128</span>,  <span class="cmt"># 文本 Token 数</span>
+    mm_input=<span class="typ">MultiModalInput</span>(
+        num_text_tokens=<span class="num">128</span>,
+        images=[<span class="typ">ImageInput</span>(width=<span class="num">672</span>, height=<span class="num">672</span>, num_tiles=<span class="num">4</span>)],
+    ),
+)
+<span class="cmt"># 计算图包含：视觉编码器 (CLIP ViT-L, 4 tiles) +</span>
+<span class="cmt">#              MLP 投影器 +</span>
+<span class="cmt">#              LLM prefill (4×576 + 128) Token</span></code></pre>
+
+<h3>视觉编码器 vs LLM Prefill 开销对比</h3>
+
+<pre><code><span class="kw">from</span> xpu_simulator <span class="kw">import</span> PerformanceEvaluator
+<span class="kw">from</span> xpu_simulator.backends.gpu <span class="kw">import</span> GPUCostModel, gpu_specs
+
+cost = <span class="typ">GPUCostModel</span>(gpu_specs[<span class="str">"H100"</span>])
+evaluator = <span class="typ">PerformanceEvaluator</span>(cost)
+result = evaluator.run(graph, overlap=<span class="typ">True</span>)
+
+<span class="cmt"># 按类别分解</span>
+<span class="kw">for</span> cat, us <span class="kw">in</span> result.category_latency.items():
+    print(f<span class="str">"{cat}: {us:.0f} us"</span>)
+<span class="cmt"># Vision Encoder: 1234 us</span>
+<span class="cmt"># Vision Projector: 12 us</span>
+<span class="cmt"># Attention Projections: 5678 us</span>
+<span class="cmt"># ...</span></code></pre>
+
+<h3>分辨率扫描</h3>
+
+<pre><code><span class="cmt"># 扫描图像分辨率以寻找 TTFT 与质量的权衡</span>
+<span class="kw">for</span> tiles <span class="kw">in</span> [<span class="num">1</span>, <span class="num">4</span>, <span class="num">9</span>, <span class="num">12</span>]:
+    graph = ext.extract(config, batch_size=<span class="num">1</span>, seq_len=<span class="num">128</span>,
+                        mm_input=<span class="typ">MultiModalInput</span>(
+                            images=[<span class="typ">ImageInput</span>(num_tiles=tiles)]))
+    result = evaluator.run(graph, overlap=<span class="typ">True</span>)
+    print(f<span class="str">"tiles={tiles}: TTFT={result.ttft_ms:.1f}ms"</span>)</code></pre>
+
+<!-- ================================================================ -->
+<h2 id="sec9">9. 参考文献</h2>
+
+<h3>模型架构论文</h3>
+<ul class="ref-list">
+  <li>Liu et al. "Visual Instruction Tuning" (LLaVA), NeurIPS 2023</li>
+  <li>Liu et al. "LLaVA-NeXT: Improved Reasoning, OCR, and World Knowledge", 2024</li>
+  <li>Chen et al. "InternVL: Scaling up Vision Foundation Models", CVPR 2024</li>
+  <li>Chen et al. "Expanding Performance Boundaries of Open-Source Multimodal Models with InternVL2.5", arXiv 2412.05271, 2024</li>
+  <li>Wu et al. "DeepSeek-VL2: Mixture-of-Experts Vision-Language Models", arXiv 2412.10302, 2024</li>
+  <li>Agrawal et al. "Pixtral 12B", arXiv 2410.07073, 2024</li>
+  <li>Li et al. "CogVLM2: Visual Language Models for Image and Video Understanding", arXiv 2408.16500, 2024</li>
+  <li>Wang et al. "Qwen2.5-VL Technical Report", 2025</li>
+</ul>
+
+<h3>综述论文</h3>
+<ul class="ref-list">
+  <li>"A Survey of Multimodal Models on Language and Vision", sciltp.com/journals/dmml, 2025</li>
+  <li>"A Systematic Review of Vision Language Models", ScienceDirect, PRISMA, 2025</li>
+  <li>"Efficient Multimodal Large Language Models: A Survey", Visual Intelligence / Springer, 2025</li>
+  <li>"Small Vision-Language Models: A Survey on Compact Architectures", arXiv 2503.10665, 2025</li>
+</ul>
+
+<h3>效率与性能</h3>
+<ul class="ref-list">
+  <li>Chen et al. "FastVLM: Efficient Vision Encoding for Vision Language Models", Apple, CVPR 2025</li>
+  <li>Cha et al. "Honeybee: Locality-Enhanced Projector for Multimodal LLM", CVPR 2024</li>
+  <li>Cao et al. "MADTP: Multimodal Alignment-Guided Dynamic Token Pruning", CVPR 2024</li>
+  <li>Yang et al. "TopV: Compatible Token Pruning with Inference Time Optimization", CVPR 2025</li>
+  <li>Tao et al. "DyCoke: Dynamic Compression of Tokens for Fast Video LLMs", CVPR 2025</li>
+  <li>"Nova: Real-Time Agentic VLM Serving with Adaptive Cross-Stage Parallelization", arXiv, 2025</li>
+</ul>
+
+<h3>设计资源</h3>
+<ul class="ref-list">
+  <li>"VLM Design Choices in 2024", HuggingFace Blog (gigant)</li>
+  <li>"Awesome VLM Architectures" 对比表, github.com/gokayfem/awesome-vlm-architectures</li>
+</ul>
+
+</div>
+</body>
+</html>
